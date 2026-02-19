@@ -1,0 +1,10 @@
+{
+    "name": "honcho-proxy",
+    "version": "1.0.0",
+    "description": "SillyTavern server plugin for Honcho AI memory",
+    "type": "module",
+    "main": "index.js",
+    "dependencies": {
+        "@honcho-ai/sdk": "^2.0.0"
+    }
+}

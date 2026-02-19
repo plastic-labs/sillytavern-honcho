@@ -1,0 +1,40 @@
+#honcho_settings {
+    display: flex;
+    flex-direction: column;
+}
+
+#honcho_settings .honcho_section {
+    display: flex;
+    flex-direction: column;
+    row-gap: 5px;
+    margin-top: 5px;
+}
+
+#honcho_settings .honcho_section_label {
+    font-weight: bold;
+    margin-top: 10px;
+}
+
+#honcho_settings .honcho_status {
+    font-size: 0.9em;
+    padding: 4px 8px;
+    border-radius: 4px;
+}
+
+#honcho_settings .honcho_status.ready {
+    color: var(--SmartThemeQuoteColor);
+}
+
+#honcho_settings .honcho_status.not-ready {
+    color: var(--SmartThemeEmColor);
+}
+
+#honcho_prefetch_queries {
+    field-sizing: content;
+    max-height: 30dvh;
+}
+
+#honcho_prompt_template {
+    field-sizing: content;
+    max-height: 30dvh;
+}

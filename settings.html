@@ -1,0 +1,116 @@
+<div id="honcho_settings">
+    <div class="inline-drawer">
+        <div class="inline-drawer-toggle inline-drawer-header">
+            <div class="flex-container alignitemscenter margin0">
+                <b>Honcho Memory</b>
+            </div>
+            <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+        </div>
+        <div class="inline-drawer-content">
+            <div class="honcho_section">
+                <!-- Enable / Disable -->
+                <label class="checkbox_label" for="honcho_enabled">
+                    <input type="checkbox" id="honcho_enabled" />
+                    <span>Enable Honcho Memory</span>
+                </label>
+
+                <!-- Status indicator -->
+                <span id="honcho_status" class="honcho_status not-ready">Not configured</span>
+
+                <hr />
+
+                <!-- API Key -->
+                <label>API Key</label>
+                <div class="flex-container">
+                    <input id="honcho_api_key" type="text" class="text_pole flex1 manage-api-keys" data-key="api_key_honcho" maxlength="0" readonly placeholder="Click to set key" />
+                </div>
+
+                <!-- Workspace ID -->
+                <label for="honcho_workspace_id">Workspace ID</label>
+                <input id="honcho_workspace_id" type="text" class="text_pole" placeholder="Enter your Honcho workspace ID" />
+
+                <hr />
+
+                <!-- Peer Mode -->
+                <span class="honcho_section_label">Peer Mode</span>
+                <div class="radio_group">
+                    <label>
+                        <input type="radio" name="honcho_peer_mode" value="single" />
+                        <span>Single peer for all personas</span>
+                    </label>
+                    <label>
+                        <input type="radio" name="honcho_peer_mode" value="per_persona" />
+                        <span>Separate peer per persona</span>
+                    </label>
+                </div>
+
+                <hr />
+
+                <!-- Context Mode -->
+                <span class="honcho_section_label">Context Mode</span>
+                <div class="radio_group">
+                    <label>
+                        <input type="radio" name="honcho_context_mode" value="prefetch" />
+                        <span>Pre-fetch</span>
+                        <i class="fa-solid fa-info-circle" title="Query Honcho before generation and inject the result into the prompt."></i>
+                    </label>
+                    <label>
+                        <input type="radio" name="honcho_context_mode" value="tool_call" />
+                        <span>Tool call</span>
+                        <i class="fa-solid fa-info-circle" title="Register a function tool the LLM can call to query Honcho memory on demand."></i>
+                    </label>
+                    <label>
+                        <input type="radio" name="honcho_context_mode" value="context" />
+                        <span>Context()</span>
+                        <i class="fa-solid fa-info-circle" title="Use Honcho's session context endpoint to get a summarized context window."></i>
+                    </label>
+                </div>
+
+                <!-- Pre-fetch settings (shown when prefetch mode) -->
+                <div id="honcho_prefetch_section" class="honcho_section">
+                    <label for="honcho_prefetch_queries">Queries (one per line)</label>
+                    <textarea id="honcho_prefetch_queries" class="text_pole textarea_compact" rows="3" placeholder="What does the user like?&#10;What is the user's personality?"></textarea>
+                </div>
+
+                <!-- Context() settings (shown when context mode) -->
+                <div id="honcho_context_section" class="honcho_section">
+                    <label for="honcho_context_tokens">Token budget</label>
+                    <input id="honcho_context_tokens" type="number" class="text_pole" min="100" max="10000" value="2000" />
+                    <label class="checkbox_label" for="honcho_context_summary">
+                        <input type="checkbox" id="honcho_context_summary" />
+                        <span>Include session summary</span>
+                    </label>
+                </div>
+
+                <hr />
+
+                <!-- Injection Position -->
+                <span class="honcho_section_label">Injection Position</span>
+                <div class="radio_group">
+                    <label>
+                        <input type="radio" name="honcho_injection_position" value="0" />
+                        <span>After Main Prompt</span>
+                    </label>
+                    <label>
+                        <input type="radio" name="honcho_injection_position" value="2" />
+                        <span>Before Main Prompt</span>
+                    </label>
+                    <label>
+                        <input type="radio" name="honcho_injection_position" value="1" />
+                        <span>In-chat @ Depth</span>
+                    </label>
+                </div>
+
+                <div id="honcho_depth_section" class="honcho_section">
+                    <label for="honcho_injection_depth">Injection Depth</label>
+                    <input id="honcho_injection_depth" type="number" class="text_pole" min="0" max="9999" value="4" />
+                </div>
+
+                <!-- Prompt Template -->
+                <label for="honcho_prompt_template">Prompt Template</label>
+                <textarea id="honcho_prompt_template" class="text_pole textarea_compact" rows="3" placeholder="Use {{text}} as placeholder for Honcho's response">[Honcho Memory]
+{{text}}</textarea>
+            </div>
+        </div>
+    </div>
+</div>

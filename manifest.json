@@ -1,0 +1,11 @@
+{
+    "display_name": "Honcho Memory",
+    "loading_order": 50,
+    "requires": [],
+    "optional": [],
+    "js": "index.js",
+    "css": "style.css",
+    "author": "Plastic Labs",
+    "version": "1.0.0",
+    "homePage": "https://github.com/plastic-labs/sillytavern-honcho"
+}
