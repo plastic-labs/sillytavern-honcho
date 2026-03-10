@@ -104,15 +104,15 @@ export async function init(router) {
             const client = await getClient(req.honchoApiKey, req.honchoWorkspaceId);
             const session = await client.session(sessionId);
 
-            const peersToAdd = {};
+            const peersToAdd = [];
             if (userPeerId) {
-                peersToAdd[userPeerId] = { observeMe: true };
+                peersToAdd.push([userPeerId, { observeMe: true }]);
             }
             if (charPeerId) {
-                peersToAdd[charPeerId] = { observeMe: false };
+                peersToAdd.push([charPeerId, { observeMe: false }]);
             }
 
-            if (Object.keys(peersToAdd).length > 0) {
+            if (peersToAdd.length > 0) {
                 await session.addPeers(peersToAdd);
             }
 

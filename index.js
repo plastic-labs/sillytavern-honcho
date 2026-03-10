@@ -43,6 +43,11 @@ let sessionSetupInProgress = false;
 
 // ─── Helpers ──────────────────────────────────────────────
 
+/** Sanitize a string to only contain letters, numbers, underscores, and hyphens. */
+function sanitizeId(str) {
+    return str.replace(/[^a-zA-Z0-9_-]/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '');
+}
+
 function isReady() {
     return (
         extension_settings.honcho?.enabled &&
@@ -61,10 +66,10 @@ function settings() {
 function getUserPeerId() {
     const context = getContext();
     if (settings().peerMode === 'per_persona') {
-        return user_avatar || context.name1 || 'default-user';
+        return sanitizeId(user_avatar || context.name1 || 'default-user');
     }
     // Single mode: stable across persona switches
-    return `st-user-${context.name1 || 'default'}`;
+    return sanitizeId(`st-user-${context.name1 || 'default'}`);
 }
 
 /**
@@ -72,10 +77,10 @@ function getUserPeerId() {
  */
 function getCharPeerId() {
     if (selected_group) {
-        return `group-${selected_group}`;
+        return sanitizeId(`group-${selected_group}`);
     }
     if (this_chid !== undefined && characters[this_chid]) {
-        return characters[this_chid].avatar || `char-${this_chid}`;
+        return sanitizeId(characters[this_chid].avatar || `char-${this_chid}`);
     }
     return 'unknown-char';
 }
@@ -116,22 +121,37 @@ async function honchoFetch(endpoint, body) {
  * CHAT_CHANGED — Ensure a Honcho session exists for this chat.
  */
 async function onChatChanged() {
-    if (!isReady()) return;
+    if (!isReady()) {
+        console.log('[Honcho] onChatChanged: not ready, skipping');
+        return;
+    }
 
-    const chatId = getCurrentChatId();
-    if (!chatId) return;
+    const rawChatId = getCurrentChatId();
+    if (!rawChatId) {
+        console.log('[Honcho] onChatChanged: no chat ID');
+        return;
+    }
+
+    const chatId = sanitizeId(rawChatId);
+    console.log(`[Honcho] onChatChanged: raw="${rawChatId}" sanitized="${chatId}"`);
 
     // Prevent race if CHAT_CHANGED fires multiple times
-    if (sessionSetupInProgress) return;
+    if (sessionSetupInProgress) {
+        console.log('[Honcho] onChatChanged: setup already in progress, skipping');
+        return;
+    }
     sessionSetupInProgress = true;
 
     try {
         const userPeerId = getUserPeerId();
         const charPeerId = getCharPeerId();
+        console.log(`[Honcho] Setting up session: user="${userPeerId}" char="${charPeerId}"`);
 
         // Ensure peers exist
-        await honchoFetch('/peer', { peerId: userPeerId, observeMe: true });
-        await honchoFetch('/peer', { peerId: charPeerId, observeMe: false });
+        const userPeer = await honchoFetch('/peer', { peerId: userPeerId, observeMe: true });
+        console.log('[Honcho] User peer result:', userPeer);
+        const charPeer = await honchoFetch('/peer', { peerId: charPeerId, observeMe: false });
+        console.log('[Honcho] Char peer result:', charPeer);
 
         // Ensure session exists with peers
         const result = await honchoFetch('/session', {
@@ -139,6 +159,7 @@ async function onChatChanged() {
             userPeerId,
             charPeerId,
         });
+        console.log('[Honcho] Session result:', result);
 
         if (result) {
             updateChatMetadata({
@@ -150,6 +171,8 @@ async function onChatChanged() {
             });
             saveMetadataDebounced();
             console.log(`[Honcho] Session ready for chat: ${chatId}`);
+        } else {
+            console.warn('[Honcho] Session setup failed — result was null');
         }
     } catch (err) {
         console.error('[Honcho] onChatChanged error:', err);
@@ -239,28 +262,42 @@ async function onGeneration() {
  * MESSAGE_SENT — Store user message in Honcho.
  */
 async function onMessageSent(messageIndex) {
-    if (!isReady()) return;
+    if (!isReady()) {
+        console.log('[Honcho] onMessageSent: not ready, skipping');
+        return;
+    }
 
     const honchoMeta = chat_metadata?.honcho;
-    if (!honchoMeta?.sessionId) return;
+    if (!honchoMeta?.sessionId) {
+        console.log('[Honcho] onMessageSent: no session in metadata, skipping');
+        return;
+    }
 
     const message = chat[messageIndex];
     if (!message || !message.is_user) return;
 
-    await honchoFetch('/session/messages', {
+    console.log(`[Honcho] Storing user message (index ${messageIndex})`);
+    const result = await honchoFetch('/session/messages', {
         sessionId: honchoMeta.sessionId,
         messages: [{ peerId: honchoMeta.userPeerId, content: message.mes }],
     });
+    console.log('[Honcho] User message store result:', result);
 }
 
 /**
  * CHARACTER_MESSAGE_RENDERED — Store AI response in Honcho.
  */
 async function onCharResponse(messageIndex) {
-    if (!isReady()) return;
+    if (!isReady()) {
+        console.log('[Honcho] onCharResponse: not ready, skipping');
+        return;
+    }
 
     const honchoMeta = chat_metadata?.honcho;
-    if (!honchoMeta?.sessionId) return;
+    if (!honchoMeta?.sessionId) {
+        console.log('[Honcho] onCharResponse: no session in metadata, skipping');
+        return;
+    }
 
     const message = chat[messageIndex];
     if (!message || message.is_user || message.is_system) return;
@@ -268,10 +305,12 @@ async function onCharResponse(messageIndex) {
     // Skip swiped-away messages (only store if this is the latest message)
     if (messageIndex !== chat.length - 1) return;
 
-    await honchoFetch('/session/messages', {
+    console.log(`[Honcho] Storing char message (index ${messageIndex})`);
+    const result = await honchoFetch('/session/messages', {
         sessionId: honchoMeta.sessionId,
         messages: [{ peerId: honchoMeta.charPeerId, content: message.mes }],
     });
+    console.log('[Honcho] Char message store result:', result);
 }
 
 // ─── Tool Registration ────────────────────────────────────
