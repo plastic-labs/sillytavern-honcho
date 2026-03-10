@@ -12,16 +12,16 @@ import {
     characters,
     this_chid,
     chat,
-} from '../../../script.js';
+} from '../../../../script.js';
 import {
     extension_settings,
     getContext,
     renderExtensionTemplateAsync,
     saveMetadataDebounced,
-} from '../../extensions.js';
-import { user_avatar } from '../../personas.js';
-import { SECRET_KEYS, secret_state } from '../../secrets.js';
-import { selected_group } from '../../group-chats.js';
+} from '../../../extensions.js';
+import { user_avatar } from '../../../personas.js';
+import { SECRET_KEYS, secret_state } from '../../../secrets.js';
+import { selected_group } from '../../../group-chats.js';
 
 const MODULE_NAME = 'honcho';
 const PLUGIN_BASE = '/api/plugins/honcho-proxy';
