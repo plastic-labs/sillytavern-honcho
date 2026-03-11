@@ -41,18 +41,21 @@ const GLOBAL_CONFIG_PATH = path.join(os.homedir(), '.honcho', 'config.json');
 
 /**
  * Get config values for SillyTavern from the global config.
- * Checks hosts.sillytavern first, then falls back to top-level defaults.
+ * Reads from hosts.sillytavern for tool-scoped values (workspace, aiPeer).
+ * Only apiKey, peerName, and enabled are truly global (shared across all tools).
  */
 function getGlobalConfigForST() {
     if (!globalConfig) return null;
 
     const stHost = globalConfig.hosts?.sillytavern;
     return {
+        // Global values — shared across all tools, managed by honcho CLI
         apiKey: globalConfig.apiKey || null,
-        workspace: stHost?.workspace || globalConfig.workspace || null,
-        peerName: stHost?.peerName || globalConfig.peerName || null,
-        aiPeer: stHost?.aiPeer || null,
+        peerName: globalConfig.peerName || null,
         enabled: globalConfig.enabled ?? false,
+        // Tool-scoped values — only from hosts.sillytavern
+        workspace: stHost?.workspace || null,
+        aiPeer: stHost?.aiPeer || null,
     };
 }
 
@@ -193,14 +196,12 @@ export async function init(router) {
     // Load global config
     globalConfig = loadGlobalConfig();
 
-    // Register SillyTavern as a host on startup
+    // Register SillyTavern as a host on startup (empty scaffold if not present)
     if (globalConfig) {
         const stHost = globalConfig.hosts?.sillytavern;
         if (!stHost) {
-            updateSTHost({
-                workspace: globalConfig.workspace || 'sillytavern',
-            });
-            console.log('[honcho-proxy] Registered hosts.sillytavern in global config');
+            updateSTHost({});
+            console.log('[honcho-proxy] Registered empty hosts.sillytavern in global config');
         }
     }
 
