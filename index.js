@@ -55,10 +55,11 @@ function sanitizeId(str) {
 }
 
 function isReady() {
+    const hasApiKey = secret_state[SECRET_KEYS.HONCHO] || globalConfigCache?.hasApiKey;
     return (
         extension_settings.honcho?.enabled &&
         extension_settings.honcho?.workspaceId &&
-        secret_state[SECRET_KEYS.HONCHO]
+        hasApiKey
     );
 }
 
@@ -572,7 +573,7 @@ function updateStatusIndicator() {
         const reasons = [];
         if (!settings()?.enabled) reasons.push('disabled');
         if (!settings()?.workspaceId) reasons.push('no workspace ID');
-        if (!secret_state[SECRET_KEYS.HONCHO]) reasons.push('no API key');
+        if (!secret_state[SECRET_KEYS.HONCHO] && !globalConfigCache?.hasApiKey) reasons.push('no API key');
         $status.text(`Not ready: ${reasons.join(', ')}`).removeClass('ready').addClass('not-ready');
     }
 }
@@ -598,6 +599,25 @@ function loadSettingsUI() {
     $('#honcho_prompt_template').val(s.promptTemplate);
     $('#honcho_context_tokens').val(s.contextTokens);
     $('#honcho_context_summary').prop('checked', s.contextSummary);
+
+    // Show global config source info
+    if (globalConfigCache?.found) {
+        const source = [];
+        if (globalConfigCache.hasApiKey && !secret_state[SECRET_KEYS.HONCHO]) {
+            source.push('API key');
+        }
+        if (globalConfigCache.workspace && s.workspaceId === globalConfigCache.workspace) {
+            source.push('workspace');
+        }
+        if (globalConfigCache.peerName) {
+            source.push(`peer: ${globalConfigCache.peerName}`);
+        }
+        if (source.length > 0) {
+            $('#honcho_config_source').text(`~/.honcho/config.json (${source.join(', ')})`).show();
+        }
+    } else {
+        $('#honcho_config_source').hide();
+    }
 
     updateConditionalSections();
     updateStatusIndicator();
