@@ -1,4 +1,6 @@
 import path from 'node:path';
+import fs from 'node:fs';
+import os from 'node:os';
 import { pathToFileURL } from 'node:url';
 
 // Dynamic import from SillyTavern's source (resolves from process.cwd(), not symlink target)
@@ -13,6 +15,43 @@ export const info = {
 
 /** @type {Map<string, import('@honcho-ai/sdk').Honcho>} */
 const clientCache = new Map();
+
+/** Global Honcho config loaded from ~/.honcho/config.json */
+let globalConfig = null;
+
+/**
+ * Load the global Honcho config from ~/.honcho/config.json.
+ * Returns the parsed config or null if not found/invalid.
+ */
+function loadGlobalConfig() {
+    const configPath = path.join(os.homedir(), '.honcho', 'config.json');
+    try {
+        const raw = fs.readFileSync(configPath, 'utf-8');
+        const config = JSON.parse(raw);
+        console.log(`[honcho-proxy] Loaded global config from ${configPath}`);
+        return config;
+    } catch {
+        console.log(`[honcho-proxy] No global config at ${configPath}`);
+        return null;
+    }
+}
+
+/**
+ * Get config values for SillyTavern from the global config.
+ * Checks hosts.sillytavern first, then falls back to top-level defaults.
+ */
+function getGlobalConfigForST() {
+    if (!globalConfig) return null;
+
+    const stHost = globalConfig.hosts?.sillytavern;
+    return {
+        apiKey: globalConfig.apiKey || null,
+        workspace: stHost?.workspace || globalConfig.workspace || null,
+        peerName: stHost?.peerName || globalConfig.peerName || null,
+        aiPeer: stHost?.aiPeer || null,
+        enabled: globalConfig.enabled ?? false,
+    };
+}
 
 /**
  * @param {string} apiKey
@@ -32,20 +71,39 @@ async function getClient(apiKey, workspaceId) {
 }
 
 /**
- * Middleware to read Honcho API key from secrets and validate request body.
+ * Middleware to read Honcho API key from secrets (with global config fallback)
+ * and validate request body.
  */
 function honchoMiddleware(req, res, next) {
+    // Skip middleware for the config endpoint
+    if (req.path === '/config') return next();
+
     try {
         const manager = new SecretManager(req.user.directories);
-        const apiKey = manager.readSecret(SECRET_KEYS.HONCHO);
+        let apiKey = manager.readSecret(SECRET_KEYS.HONCHO);
 
-        if (!apiKey) {
-            return res.status(403).json({ error: 'Honcho API key not configured. Set it in SillyTavern API Connections.' });
+        // Fall back to global config API key
+        if (!apiKey && globalConfig?.apiKey) {
+            apiKey = globalConfig.apiKey;
+            console.log('[honcho-proxy] Using API key from global ~/.honcho/config.json');
         }
 
-        const { workspaceId } = req.body;
+        if (!apiKey) {
+            return res.status(403).json({ error: 'Honcho API key not configured. Set it in SillyTavern API Connections or ~/.honcho/config.json.' });
+        }
+
+        // workspaceId from request body, or fall back to global config
+        let workspaceId = req.body?.workspaceId;
         if (!workspaceId) {
-            return res.status(400).json({ error: 'workspaceId is required' });
+            const stConfig = getGlobalConfigForST();
+            workspaceId = stConfig?.workspace;
+            if (workspaceId) {
+                console.log(`[honcho-proxy] Using workspace "${workspaceId}" from global config`);
+            }
+        }
+
+        if (!workspaceId) {
+            return res.status(400).json({ error: 'workspaceId is required (set in extension settings or ~/.honcho/config.json)' });
         }
 
         req.honchoApiKey = apiKey;
@@ -61,6 +119,9 @@ function honchoMiddleware(req, res, next) {
  * @param {import('express').Router} router
  */
 export async function init(router) {
+    // Load global config
+    globalConfig = loadGlobalConfig();
+
     // Verify SDK is importable at startup
     try {
         await import('@honcho-ai/sdk');
@@ -71,6 +132,30 @@ export async function init(router) {
     }
 
     router.use(honchoMiddleware);
+
+    // GET /config — Return global config values for client-side auto-population
+    router.get('/config', (req, res) => {
+        const stConfig = getGlobalConfigForST();
+        if (!stConfig) {
+            return res.json({ found: false });
+        }
+
+        // Check if ST secrets store has an API key
+        let hasSecretKey = false;
+        try {
+            const manager = new SecretManager(req.user.directories);
+            hasSecretKey = !!manager.readSecret(SECRET_KEYS.HONCHO);
+        } catch { /* ignore */ }
+
+        return res.json({
+            found: true,
+            hasApiKey: !!(stConfig.apiKey || hasSecretKey),
+            workspace: stConfig.workspace,
+            peerName: stConfig.peerName,
+            aiPeer: stConfig.aiPeer,
+            enabled: stConfig.enabled,
+        });
+    });
 
     // POST /peer — Create or get a peer
     router.post('/peer', async (req, res) => {

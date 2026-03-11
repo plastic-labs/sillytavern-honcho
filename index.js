@@ -66,27 +66,43 @@ function settings() {
     return extension_settings.honcho;
 }
 
+/** Global config values fetched from ~/.honcho/config.json via the plugin */
+let globalConfigCache = null;
+
 /**
  * Resolve the user peer ID based on current peer mode.
+ * Priority: globalConfig.peerName > persona name > display name
  */
 function getUserPeerId() {
     const context = getContext();
-    if (settings().peerMode === 'per_persona') {
-        return sanitizeId(user_avatar || context.name1 || 'default-user');
+
+    // Use global config peerName if available (e.g. "eri")
+    if (globalConfigCache?.peerName) {
+        if (settings().peerMode === 'per_persona') {
+            // Append persona name for per-persona mode
+            const personaName = context.name1 || 'default';
+            return sanitizeId(`${globalConfigCache.peerName}-${personaName}`);
+        }
+        return sanitizeId(globalConfigCache.peerName);
     }
-    // Single mode: stable across persona switches
-    return sanitizeId(`st-user-${context.name1 || 'default'}`);
+
+    // Fallback: use ST display name
+    if (settings().peerMode === 'per_persona') {
+        return sanitizeId(context.name1 || 'default-user');
+    }
+    return sanitizeId(context.name1 || 'user');
 }
 
 /**
- * Resolve the character peer ID.
+ * Resolve the character peer ID using the character's display name.
  */
 function getCharPeerId() {
     if (selected_group) {
         return sanitizeId(`group-${selected_group}`);
     }
     if (this_chid !== undefined && characters[this_chid]) {
-        return sanitizeId(characters[this_chid].avatar || `char-${this_chid}`);
+        // Use character name, not avatar filename
+        return sanitizeId(characters[this_chid].name || `char-${this_chid}`);
     }
     return 'unknown-char';
 }
@@ -202,8 +218,18 @@ async function onChatChanged() {
         return;
     }
 
-    const chatId = sanitizeId(rawChatId);
-    console.log(`[Honcho] onChatChanged: raw="${rawChatId}" sanitized="${chatId}"`);
+    // Build a readable session ID: "charName-YYYY-MM-DD-hash"
+    // Use a short hash of the raw ID for uniqueness while keeping it human-readable
+    const charName = (this_chid !== undefined && characters[this_chid])
+        ? characters[this_chid].name
+        : 'chat';
+    const dateMatch = rawChatId.match(/(\d{4}-\d{2}-\d{2})/);
+    const dateStr = dateMatch ? dateMatch[1] : new Date().toISOString().slice(0, 10);
+    const shortHash = Array.from(rawChatId)
+        .reduce((h, c) => ((h << 5) - h + c.charCodeAt(0)) | 0, 0)
+        .toString(36).replace('-', '');
+    const chatId = sanitizeId(`${charName}-${dateStr}-${shortHash}`);
+    console.log(`[Honcho] onChatChanged: raw="${rawChatId}" sessionId="${chatId}"`);
 
     // Prevent race if CHAT_CHANGED fires multiple times
     if (sessionSetupInProgress) {
@@ -632,6 +658,43 @@ jQuery(async () => {
         extension_settings.honcho = {};
     }
     extension_settings.honcho = Object.assign({}, defaultSettings, extension_settings.honcho);
+
+    // Try to auto-populate from global ~/.honcho/config.json
+    try {
+        const configResp = await fetch(`${PLUGIN_BASE}/config`, {
+            method: 'GET',
+            headers: getRequestHeaders(),
+        });
+        if (configResp.ok) {
+            const globalConfig = await configResp.json();
+            if (globalConfig.found) {
+                // Cache for peer ID resolution
+                globalConfigCache = globalConfig;
+
+                let changed = false;
+
+                // Auto-populate workspace if not set
+                if (!settings().workspaceId && globalConfig.workspace) {
+                    settings().workspaceId = globalConfig.workspace;
+                    changed = true;
+                    console.log(`[Honcho] Auto-populated workspace from global config: ${globalConfig.workspace}`);
+                }
+
+                // Auto-enable if global config says enabled and not yet configured
+                if (globalConfig.enabled && !settings().enabled && globalConfig.hasApiKey) {
+                    settings().enabled = true;
+                    changed = true;
+                    console.log('[Honcho] Auto-enabled from global config');
+                }
+
+                if (changed) {
+                    saveSettingsDebounced();
+                }
+            }
+        }
+    } catch (err) {
+        console.log('[Honcho] Could not fetch global config:', err.message);
+    }
 
     // Render settings panel
     const settingsHtml = await renderExtensionTemplateAsync('third-party/sillytavern-honcho', 'settings');
