@@ -30,7 +30,7 @@ const defaultSettings = {
     enabled: false,
     workspaceId: '',
     peerMode: 'single',
-    contextMode: 'prefetch',
+    contextMode: 'tool_call',
     prefetchQueries: ['Based on this message: "{{message}}", what do you know about the user that might be relevant?'],
     injectionPosition: extension_prompt_types.IN_PROMPT,
     injectionDepth: 4,
