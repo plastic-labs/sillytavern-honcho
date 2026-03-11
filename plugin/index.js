@@ -41,20 +41,18 @@ const GLOBAL_CONFIG_PATH = path.join(os.homedir(), '.honcho', 'config.json');
 
 /**
  * Get config values for SillyTavern from the global config.
- * Reads from hosts.sillytavern for tool-scoped values (workspace, aiPeer).
- * Only apiKey, peerName, and enabled are truly global (shared across all tools).
+ * Reads: hosts.sillytavern first, falls back to root-level globals.
+ * Writes: always scoped to hosts.sillytavern (never mutate root).
  */
 function getGlobalConfigForST() {
     if (!globalConfig) return null;
 
     const stHost = globalConfig.hosts?.sillytavern;
     return {
-        // Global values — shared across all tools, managed by honcho CLI
         apiKey: globalConfig.apiKey || null,
-        peerName: globalConfig.peerName || null,
+        peerName: stHost?.peerName || globalConfig.peerName || null,
         enabled: globalConfig.enabled ?? false,
-        // Tool-scoped values — only from hosts.sillytavern
-        workspace: stHost?.workspace || null,
+        workspace: stHost?.workspace || globalConfig.workspace || null,
         aiPeer: stHost?.aiPeer || null,
     };
 }
