@@ -57,6 +57,17 @@ function getGlobalConfigForST() {
 }
 
 /**
+ * Re-read the global config from disk to avoid overwriting changes
+ * made by other tools (claude-code, cursor, hermes, etc.).
+ */
+function refreshGlobalConfig() {
+    const fresh = loadGlobalConfig();
+    if (fresh) {
+        globalConfig = fresh;
+    }
+}
+
+/**
  * Write the current globalConfig back to ~/.honcho/config.json.
  * Creates the directory if needed.
  */
@@ -78,8 +89,10 @@ function saveGlobalConfig() {
 
 /**
  * Update the hosts.sillytavern entry in the global config.
+ * Re-reads from disk first to avoid clobbering other tools' writes.
  */
 function updateSTHost(updates) {
+    refreshGlobalConfig();
     if (!globalConfig) return;
 
     if (!globalConfig.hosts) globalConfig.hosts = {};
@@ -91,8 +104,10 @@ function updateSTHost(updates) {
 
 /**
  * Register or update a session mapping in the global config.
+ * Re-reads from disk first to avoid clobbering other tools' writes.
  */
 function registerSession(sessionId) {
+    refreshGlobalConfig();
     if (!globalConfig) return;
 
     if (!globalConfig.sessions) globalConfig.sessions = {};
