@@ -76,6 +76,7 @@ export async function init(router) {
     router.post('/peer', async (req, res) => {
         try {
             const { peerId, observeMe } = req.body;
+            console.log(`[honcho-proxy] POST /peer peerId="${peerId}" observeMe=${observeMe}`);
             if (!peerId) {
                 return res.status(400).json({ error: 'peerId is required' });
             }
@@ -86,6 +87,7 @@ export async function init(router) {
                 opts.configuration = { observeMe };
             }
             const peer = await client.peer(peerId, opts);
+            console.log(`[honcho-proxy] POST /peer OK id="${peer.id}"`);
             return res.json({ id: peer.id, workspaceId: peer.workspaceId });
         } catch (err) {
             console.error('[honcho-proxy] POST /peer error:', err.message);
@@ -97,12 +99,14 @@ export async function init(router) {
     router.post('/session', async (req, res) => {
         try {
             const { sessionId, userPeerId, charPeerId } = req.body;
+            console.log(`[honcho-proxy] POST /session sessionId="${sessionId}" userPeerId="${userPeerId}" charPeerId="${charPeerId}"`);
             if (!sessionId) {
                 return res.status(400).json({ error: 'sessionId is required' });
             }
 
             const client = await getClient(req.honchoApiKey, req.honchoWorkspaceId);
             const session = await client.session(sessionId);
+            console.log(`[honcho-proxy] Session created/fetched id="${session.id}"`);
 
             const peersToAdd = [];
             if (userPeerId) {
@@ -113,7 +117,9 @@ export async function init(router) {
             }
 
             if (peersToAdd.length > 0) {
+                console.log(`[honcho-proxy] Adding ${peersToAdd.length} peers to session`);
                 await session.addPeers(peersToAdd);
+                console.log(`[honcho-proxy] Peers added OK`);
             }
 
             return res.json({ id: session.id, workspaceId: session.workspaceId });
@@ -127,6 +133,7 @@ export async function init(router) {
     router.post('/session/messages', async (req, res) => {
         try {
             const { sessionId, messages } = req.body;
+            console.log(`[honcho-proxy] POST /session/messages sessionId="${sessionId}" count=${messages?.length}`);
             if (!sessionId || !Array.isArray(messages) || messages.length === 0) {
                 return res.status(400).json({ error: 'sessionId and messages[] are required' });
             }
@@ -138,6 +145,7 @@ export async function init(router) {
             const messageInputs = [];
             for (const msg of messages) {
                 if (!msg.peerId || !msg.content) continue;
+                console.log(`[honcho-proxy] Building message: peerId="${msg.peerId}" content="${msg.content.slice(0, 80)}..."`);
                 const peer = await client.peer(msg.peerId);
                 messageInputs.push(peer.message(msg.content));
             }
@@ -147,6 +155,7 @@ export async function init(router) {
             }
 
             const stored = await session.addMessages(messageInputs);
+            console.log(`[honcho-proxy] Messages stored OK count=${stored.length}`);
             return res.json({ count: stored.length });
         } catch (err) {
             console.error('[honcho-proxy] POST /session/messages error:', err.message);
@@ -158,6 +167,7 @@ export async function init(router) {
     router.post('/chat', async (req, res) => {
         try {
             const { peerId, query, sessionId } = req.body;
+            console.log(`[honcho-proxy] POST /chat peerId="${peerId}" query="${query.slice(0, 80)}" sessionId="${sessionId}"`);
             if (!peerId || !query) {
                 return res.status(400).json({ error: 'peerId and query are required' });
             }
@@ -171,6 +181,7 @@ export async function init(router) {
             }
 
             const response = await peer.chat(query, opts);
+            console.log(`[honcho-proxy] POST /chat response="${String(response).slice(0, 120)}..."`);
             return res.json({ response: response || '' });
         } catch (err) {
             console.error('[honcho-proxy] POST /chat error:', err.message);
@@ -182,6 +193,7 @@ export async function init(router) {
     router.post('/context', async (req, res) => {
         try {
             const { sessionId, userPeerId, tokens, summary } = req.body;
+            console.log(`[honcho-proxy] POST /context sessionId="${sessionId}" userPeerId="${userPeerId}" tokens=${tokens} summary=${summary}`);
             if (!sessionId || !userPeerId) {
                 return res.status(400).json({ error: 'sessionId and userPeerId are required' });
             }
@@ -199,6 +211,7 @@ export async function init(router) {
             opts.peerPerspective = userPeerId;
 
             const context = await session.context(opts);
+            console.log(`[honcho-proxy] POST /context response="${String(context).slice(0, 120)}..."`);
             // Return the raw context string representation
             return res.json({ context: String(context) });
         } catch (err) {
@@ -207,7 +220,47 @@ export async function init(router) {
         }
     });
 
-    console.log('[honcho-proxy] Plugin initialized with 5 routes');
+    // POST /conclusion — Create a conclusion (persistent observation) about a peer
+    router.post('/conclusion', async (req, res) => {
+        try {
+            const { peerId, content } = req.body;
+            console.log(`[honcho-proxy] POST /conclusion peerId="${peerId}" content="${content?.slice(0, 80)}..."`);
+            if (!peerId || !content) {
+                return res.status(400).json({ error: 'peerId and content are required' });
+            }
+
+            const client = await getClient(req.honchoApiKey, req.honchoWorkspaceId);
+            const peer = await client.peer(peerId);
+            const conclusion = await peer.createConclusion(content);
+            console.log(`[honcho-proxy] Conclusion created id="${conclusion.id}"`);
+            return res.json({ id: conclusion.id, content: conclusion.content });
+        } catch (err) {
+            console.error('[honcho-proxy] POST /conclusion error:', err.message);
+            return res.status(500).json({ error: err.message });
+        }
+    });
+
+    // POST /search — Semantic search across session messages
+    router.post('/search', async (req, res) => {
+        try {
+            const { sessionId, query, limit } = req.body;
+            console.log(`[honcho-proxy] POST /search sessionId="${sessionId}" query="${query?.slice(0, 80)}" limit=${limit}`);
+            if (!sessionId || !query) {
+                return res.status(400).json({ error: 'sessionId and query are required' });
+            }
+
+            const client = await getClient(req.honchoApiKey, req.honchoWorkspaceId);
+            const session = await client.session(sessionId);
+            const results = await session.search(query, { limit: limit || 10 });
+            console.log(`[honcho-proxy] Search returned ${results.length} results`);
+            return res.json({ results });
+        } catch (err) {
+            console.error('[honcho-proxy] POST /search error:', err.message);
+            return res.status(500).json({ error: err.message });
+        }
+    });
+
+    console.log('[honcho-proxy] Plugin initialized with 7 routes');
 }
 
 export async function exit() {

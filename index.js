@@ -31,7 +31,7 @@ const defaultSettings = {
     workspaceId: '',
     peerMode: 'single',
     contextMode: 'prefetch',
-    prefetchQueries: ['What do you know about the user?'],
+    prefetchQueries: ['Based on this message: "{{message}}", what do you know about the user that might be relevant?'],
     injectionPosition: extension_prompt_types.IN_PROMPT,
     injectionDepth: 4,
     promptTemplate: '[Honcho Memory]\n{{text}}',
@@ -40,6 +40,12 @@ const defaultSettings = {
 };
 
 let sessionSetupInProgress = false;
+let lastGenerationChatIndex = -1;
+
+/** Cache for late-arriving query results. Key = cache key, Value = result string. */
+const lateResultCache = new Map();
+/** In-flight background promises that outlived their timeout. Key = cache key. */
+const pendingBackgroundQueries = new Map();
 
 // ─── Helpers ──────────────────────────────────────────────
 
@@ -86,12 +92,12 @@ function getCharPeerId() {
 }
 
 /**
- * Make a request to the Honcho plugin proxy.
+ * Make a request to the Honcho plugin proxy (no timeout, raw fetch).
  * @param {string} endpoint
  * @param {object} body
  * @returns {Promise<object|null>}
  */
-async function honchoFetch(endpoint, body) {
+async function honchoFetchRaw(endpoint, body) {
     try {
         const response = await fetch(`${PLUGIN_BASE}${endpoint}`, {
             method: 'POST',
@@ -111,6 +117,70 @@ async function honchoFetch(endpoint, body) {
         return await response.json();
     } catch (err) {
         console.warn(`[Honcho] ${endpoint} error:`, err.message);
+        return null;
+    }
+}
+
+/**
+ * Make a request with a soft timeout. If the timeout expires:
+ * - Returns cached result from a previous late arrival (if available)
+ * - Keeps the request running in the background and caches its result
+ * - Next call with the same cacheKey will pick up the late result
+ *
+ * @param {string} endpoint
+ * @param {object} body
+ * @param {number} timeoutMs - Soft timeout in ms (default 30s)
+ * @param {string} [cacheKey] - Optional key for late-result caching. If omitted, no caching.
+ * @returns {Promise<object|null>}
+ */
+async function honchoFetch(endpoint, body, timeoutMs = 30000, cacheKey = null) {
+    // Check if a previous late-arriving result is cached
+    if (cacheKey && lateResultCache.has(cacheKey)) {
+        const cached = lateResultCache.get(cacheKey);
+        lateResultCache.delete(cacheKey);
+        console.log(`[Honcho] Using cached late result for ${cacheKey}`);
+        return cached;
+    }
+
+    const fetchPromise = honchoFetchRaw(endpoint, body);
+
+    if (!cacheKey) {
+        // No caching, just use a hard timeout
+        try {
+            const result = await Promise.race([
+                fetchPromise,
+                new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), timeoutMs)),
+            ]);
+            return result;
+        } catch {
+            return null;
+        }
+    }
+
+    // Soft timeout with background caching
+    try {
+        const result = await Promise.race([
+            fetchPromise,
+            new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), timeoutMs)),
+        ]);
+        // Completed in time — clean up any pending background query
+        pendingBackgroundQueries.delete(cacheKey);
+        return result;
+    } catch {
+        // Timed out — let it run in the background and cache the result
+        console.log(`[Honcho] ${endpoint} timed out after ${timeoutMs}ms, continuing in background (key: ${cacheKey})`);
+        if (!pendingBackgroundQueries.has(cacheKey)) {
+            const bgPromise = fetchPromise.then(result => {
+                if (result) {
+                    lateResultCache.set(cacheKey, result);
+                    console.log(`[Honcho] Late result cached for ${cacheKey}`);
+                }
+                pendingBackgroundQueries.delete(cacheKey);
+            }).catch(() => {
+                pendingBackgroundQueries.delete(cacheKey);
+            });
+            pendingBackgroundQueries.set(cacheKey, bgPromise);
+        }
         return null;
     }
 }
@@ -195,6 +265,23 @@ async function onGeneration() {
     const honchoMeta = chat_metadata?.honcho;
     if (!honchoMeta?.sessionId) return;
 
+    // Dedup guard: prevent double-firing for the same chat index
+    const currentIndex = chat.length - 1;
+    if (currentIndex >= 0 && currentIndex === lastGenerationChatIndex) {
+        console.log(`[Honcho] onGeneration: skipping duplicate for index ${currentIndex}`);
+        return;
+    }
+    lastGenerationChatIndex = currentIndex;
+
+    // Get the last user message for contextual queries
+    let lastUserMessage = '';
+    for (let i = chat.length - 1; i >= 0; i--) {
+        if (chat[i]?.is_user && chat[i]?.mes) {
+            lastUserMessage = chat[i].mes;
+            break;
+        }
+    }
+
     let contextText = '';
 
     try {
@@ -203,14 +290,18 @@ async function onGeneration() {
             const results = [];
 
             for (const query of queries) {
-                const trimmed = query.trim();
+                let trimmed = query.trim();
                 if (!trimmed) continue;
 
+                // Replace {{message}} with the user's last message
+                trimmed = trimmed.replace(/\{\{message\}\}/gi, lastUserMessage);
+
+                const cacheKey = `prefetch:${honchoMeta.sessionId}:${trimmed.slice(0, 40)}`;
                 const result = await honchoFetch('/chat', {
                     peerId: honchoMeta.userPeerId,
                     query: trimmed,
                     sessionId: honchoMeta.sessionId,
-                });
+                }, 15000, cacheKey);
 
                 if (result?.response) {
                     results.push(result.response);
@@ -315,20 +406,22 @@ async function onCharResponse(messageIndex) {
 
 // ─── Tool Registration ────────────────────────────────────
 
-function registerHonchoTool() {
+function registerHonchoTools() {
     const context = getContext();
+    const shouldRegister = () => isReady() && settings().contextMode === 'tool_call';
 
+    // Query memory — dialectic reasoning about the user
     context.registerFunctionTool({
         name: 'honcho_query_memory',
-        displayName: 'Honcho Memory',
-        description: 'Query the user\'s memory and personal context from Honcho. Use this to recall what you know about the user.',
+        displayName: 'Honcho: Query Memory',
+        description: 'Query what you know about the user using dialectic reasoning. Use this to recall preferences, history, personality traits, or anything relevant about them.',
         parameters: {
             $schema: 'http://json-schema.org/draft-04/schema#',
             type: 'object',
             properties: {
                 query: {
                     type: 'string',
-                    description: 'The question to ask about the user, e.g. "What are the user\'s preferences?"',
+                    description: 'Natural language question about the user, e.g. "What are the user\'s interests?" or "What have we discussed before?"',
                 },
             },
             required: ['query'],
@@ -341,18 +434,91 @@ function registerHonchoTool() {
                 return 'Honcho session not initialized for this chat.';
             }
 
+            const cacheKey = `tool:${honchoMeta.sessionId}:${args.query.slice(0, 40)}`;
             const result = await honchoFetch('/chat', {
                 peerId: honchoMeta.userPeerId,
                 query: args.query,
                 sessionId: honchoMeta.sessionId,
-            });
+            }, 30000, cacheKey);
 
             return result?.response || 'No information available.';
         },
         formatMessage: () => 'Querying Honcho memory...',
-        shouldRegister: () => {
-            return isReady() && settings().contextMode === 'tool_call';
+        shouldRegister,
+        stealth: true,
+    });
+
+    // Save observation — write a conclusion about the user to persistent memory
+    context.registerFunctionTool({
+        name: 'honcho_save_observation',
+        displayName: 'Honcho: Save Observation',
+        description: 'Save an important observation, insight, or fact about the user to persistent memory. Use this when you learn something worth remembering: preferences, biographical details, emotional states, recurring topics, or relationship dynamics.',
+        parameters: {
+            $schema: 'http://json-schema.org/draft-04/schema#',
+            type: 'object',
+            properties: {
+                content: {
+                    type: 'string',
+                    description: 'The observation to save, e.g. "The user prefers riddles over trivia" or "User\'s name is Erosika"',
+                },
+            },
+            required: ['content'],
         },
+        action: async (args) => {
+            if (!args?.content) return 'No content provided.';
+
+            const honchoMeta = chat_metadata?.honcho;
+            if (!honchoMeta?.userPeerId) {
+                return 'Honcho session not initialized for this chat.';
+            }
+
+            const result = await honchoFetch('/conclusion', {
+                peerId: honchoMeta.userPeerId,
+                content: args.content,
+            });
+
+            return result ? `Observation saved: ${args.content}` : 'Failed to save observation.';
+        },
+        formatMessage: () => 'Saving observation to memory...',
+        shouldRegister,
+        stealth: true,
+    });
+
+    // Search conversation history — semantic search across messages
+    context.registerFunctionTool({
+        name: 'honcho_search_history',
+        displayName: 'Honcho: Search History',
+        description: 'Search through past conversation messages using semantic search. Use this to find specific things the user said or topics you discussed previously.',
+        parameters: {
+            $schema: 'http://json-schema.org/draft-04/schema#',
+            type: 'object',
+            properties: {
+                query: {
+                    type: 'string',
+                    description: 'What to search for in conversation history, e.g. "when they talked about their job" or "favorite music"',
+                },
+            },
+            required: ['query'],
+        },
+        action: async (args) => {
+            if (!args?.query) return 'No query provided.';
+
+            const honchoMeta = chat_metadata?.honcho;
+            if (!honchoMeta?.sessionId) {
+                return 'Honcho session not initialized for this chat.';
+            }
+
+            const result = await honchoFetch('/search', {
+                sessionId: honchoMeta.sessionId,
+                query: args.query,
+                limit: 5,
+            });
+
+            if (!result?.results?.length) return 'No matching messages found.';
+            return result.results.map((r, i) => `${i + 1}. ${r.content || r}`).join('\n');
+        },
+        formatMessage: () => 'Searching conversation history...',
+        shouldRegister,
         stealth: true,
     });
 }
@@ -474,8 +640,8 @@ jQuery(async () => {
     loadSettingsUI();
     bindSettingsListeners();
 
-    // Register function tool for tool_call mode
-    registerHonchoTool();
+    // Register function tools for tool_call mode
+    registerHonchoTools();
 
     // Subscribe to events
     eventSource.on(event_types.CHAT_CHANGED, onChatChanged);
