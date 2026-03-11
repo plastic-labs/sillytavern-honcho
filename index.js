@@ -267,6 +267,19 @@ async function onChatChanged() {
             });
             saveMetadataDebounced();
             console.log(`[Honcho] Session ready for chat: ${chatId}`);
+
+            // Update global config with current aiPeer and session
+            try {
+                await fetch(`${PLUGIN_BASE}/config/update`, {
+                    method: 'POST',
+                    headers: getRequestHeaders(),
+                    body: JSON.stringify({
+                        aiPeer: charPeerId,
+                        sessionId: chatId,
+                        workspace: settings().workspaceId,
+                    }),
+                });
+            } catch { /* best-effort */ }
         } else {
             console.warn('[Honcho] Session setup failed — result was null');
         }

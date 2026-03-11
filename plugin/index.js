@@ -36,6 +36,9 @@ function loadGlobalConfig() {
     }
 }
 
+/** Path to the global config file */
+const GLOBAL_CONFIG_PATH = path.join(os.homedir(), '.honcho', 'config.json');
+
 /**
  * Get config values for SillyTavern from the global config.
  * Checks hosts.sillytavern first, then falls back to top-level defaults.
@@ -51,6 +54,59 @@ function getGlobalConfigForST() {
         aiPeer: stHost?.aiPeer || null,
         enabled: globalConfig.enabled ?? false,
     };
+}
+
+/**
+ * Write the current globalConfig back to ~/.honcho/config.json.
+ * Creates the directory if needed.
+ */
+function saveGlobalConfig() {
+    if (!globalConfig) return false;
+    try {
+        const dir = path.dirname(GLOBAL_CONFIG_PATH);
+        if (!fs.existsSync(dir)) {
+            fs.mkdirSync(dir, { recursive: true });
+        }
+        fs.writeFileSync(GLOBAL_CONFIG_PATH, JSON.stringify(globalConfig, null, 2) + '\n');
+        console.log(`[honcho-proxy] Saved global config to ${GLOBAL_CONFIG_PATH}`);
+        return true;
+    } catch (err) {
+        console.error(`[honcho-proxy] Failed to save global config: ${err.message}`);
+        return false;
+    }
+}
+
+/**
+ * Update the hosts.sillytavern entry in the global config.
+ */
+function updateSTHost(updates) {
+    if (!globalConfig) return;
+
+    if (!globalConfig.hosts) globalConfig.hosts = {};
+    if (!globalConfig.hosts.sillytavern) globalConfig.hosts.sillytavern = {};
+
+    Object.assign(globalConfig.hosts.sillytavern, updates);
+    saveGlobalConfig();
+}
+
+/**
+ * Register or update a session mapping in the global config.
+ */
+function registerSession(sessionId) {
+    if (!globalConfig) return;
+
+    if (!globalConfig.sessions) globalConfig.sessions = {};
+
+    // Use SillyTavern's data directory as the key
+    const stDir = process.cwd();
+    const existing = globalConfig.sessions[stDir];
+
+    // Only write if the session changed
+    if (existing !== sessionId) {
+        globalConfig.sessions[stDir] = sessionId;
+        saveGlobalConfig();
+        console.log(`[honcho-proxy] Registered session "${sessionId}" for ${stDir}`);
+    }
 }
 
 /**
@@ -75,8 +131,8 @@ async function getClient(apiKey, workspaceId) {
  * and validate request body.
  */
 function honchoMiddleware(req, res, next) {
-    // Skip middleware for the config endpoint
-    if (req.path === '/config') return next();
+    // Skip middleware for config endpoints
+    if (req.path === '/config' || req.path === '/config/update') return next();
 
     try {
         const manager = new SecretManager(req.user.directories);
@@ -122,6 +178,17 @@ export async function init(router) {
     // Load global config
     globalConfig = loadGlobalConfig();
 
+    // Register SillyTavern as a host on startup
+    if (globalConfig) {
+        const stHost = globalConfig.hosts?.sillytavern;
+        if (!stHost) {
+            updateSTHost({
+                workspace: globalConfig.workspace || 'sillytavern',
+            });
+            console.log('[honcho-proxy] Registered hosts.sillytavern in global config');
+        }
+    }
+
     // Verify SDK is importable at startup
     try {
         await import('@honcho-ai/sdk');
@@ -155,6 +222,29 @@ export async function init(router) {
             aiPeer: stConfig.aiPeer,
             enabled: stConfig.enabled,
         });
+    });
+
+    // POST /config/update — Update hosts.sillytavern and session in global config
+    router.post('/config/update', (req, res) => {
+        if (!globalConfig) {
+            return res.status(404).json({ error: 'No global config found at ~/.honcho/config.json' });
+        }
+
+        const { aiPeer, workspace, sessionId } = req.body;
+        const updates = {};
+
+        if (aiPeer) updates.aiPeer = aiPeer;
+        if (workspace) updates.workspace = workspace;
+
+        if (Object.keys(updates).length > 0) {
+            updateSTHost(updates);
+        }
+
+        if (sessionId) {
+            registerSession(sessionId);
+        }
+
+        return res.json({ ok: true, host: globalConfig.hosts?.sillytavern });
     });
 
     // POST /peer — Create or get a peer
