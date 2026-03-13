@@ -66,8 +66,8 @@ Every generation injects the peer representation and session summary from `sessi
 
 | Mode | Behavior |
 | --- | --- |
-| **Context only** (default) | Base layer only -- peer representation + session summary |
-| **Pre-fetch** | Base layer + dialectic `peer.chat()` queries on an interval |
+| **Context only** | Base layer only -- peer representation + session summary |
+| **Pre-fetch** (default) | Base layer + dialectic `peer.chat()` queries on an interval |
 | **Tool call** | Base layer + function tools the LLM can call on demand (query, save observation, search) |
 
 ### Peer modes

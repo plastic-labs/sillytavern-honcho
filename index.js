@@ -33,7 +33,7 @@ const defaultSettings = {
     peerMode: 'single',
     sessionNaming: 'auto',
     customSessionName: '',
-    contextMode: 'context',
+    contextMode: 'prefetch',
     prefetchQueries: ['What do you know about the user?'],
     prefetchInterval: 8,
     injectionPosition: extension_prompt_types.IN_PROMPT,
