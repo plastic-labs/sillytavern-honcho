@@ -87,7 +87,7 @@ Test-Step "Install SillyTavern dependencies" {
 }
 
 Test-Step "Enable server plugins in config.yaml" {
-    $configSrc = Join-Path $ST_DIR "default" "config.yaml"
+    $configSrc = Join-Path (Join-Path $ST_DIR "default") "config.yaml"
     $configDst = Join-Path $ST_DIR "config.yaml"
     if ((Test-Path $configSrc) -and -not (Test-Path $configDst)) {
         Copy-Item -Path $configSrc -Destination $configDst
