@@ -21,7 +21,6 @@ import {
     renderExtensionTemplateAsync,
     saveMetadataDebounced,
 } from '../../../extensions.js';
-import { user_avatar } from '../../../personas.js';
 import { SECRET_KEYS, secret_state } from '../../../secrets.js';
 import { selected_group } from '../../../group-chats.js';
 
@@ -55,7 +54,8 @@ const pendingBackgroundQueries = new Map();
 
 /** Sanitize a string to only contain letters, numbers, underscores, and hyphens. */
 function sanitizeId(str) {
-    return str.replace(/[^a-zA-Z0-9_-]/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '');
+    const cleaned = str.replace(/[^a-zA-Z0-9_-]/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '');
+    return cleaned || 'unnamed';
 }
 
 function isReady() {
@@ -84,8 +84,11 @@ function getUserPeerId() {
     // Use global config peerName if available (e.g. "eri")
     if (globalConfigCache?.peerName) {
         if (settings().peerMode === 'per_persona') {
-            // Append persona name for per-persona mode
             const personaName = context.name1 || 'default';
+            // Don't duplicate if persona name matches peerName
+            if (sanitizeId(personaName) === sanitizeId(globalConfigCache.peerName)) {
+                return sanitizeId(globalConfigCache.peerName);
+            }
             return sanitizeId(`${globalConfigCache.peerName}-${personaName}`);
         }
         return sanitizeId(globalConfigCache.peerName);
@@ -316,9 +319,6 @@ async function onGeneration() {
 
     const mode = settings().contextMode;
 
-    // Tool call mode: no pre-injection needed
-    if (mode === 'tool_call') return;
-
     const honchoMeta = chat_metadata?.honcho;
     if (!honchoMeta?.sessionId) return;
 
@@ -339,12 +339,24 @@ async function onGeneration() {
         }
     }
 
-    let contextText = '';
+    const parts = [];
 
     try {
+        // Base layer: always fetch session context (peer representation + summary)
+        const contextResult = await honchoFetch('/context', {
+            sessionId: honchoMeta.sessionId,
+            userPeerId: honchoMeta.userPeerId,
+            tokens: settings().contextTokens,
+            summary: settings().contextSummary,
+        });
+
+        if (contextResult?.context) {
+            parts.push(contextResult.context);
+        }
+
+        // Prefetch layer: also run dialectic peer.chat() queries
         if (mode === 'prefetch') {
             const queries = settings().prefetchQueries || [];
-            const results = [];
 
             for (const query of queries) {
                 let trimmed = query.trim();
@@ -361,26 +373,15 @@ async function onGeneration() {
                 }, 15000, cacheKey);
 
                 if (result?.response) {
-                    results.push(result.response);
+                    parts.push(result.response);
                 }
-            }
-
-            contextText = results.join('\n\n');
-        } else if (mode === 'context') {
-            const result = await honchoFetch('/context', {
-                sessionId: honchoMeta.sessionId,
-                userPeerId: honchoMeta.userPeerId,
-                tokens: settings().contextTokens,
-                summary: settings().contextSummary,
-            });
-
-            if (result?.context) {
-                contextText = result.context;
             }
         }
     } catch (err) {
         console.warn('[Honcho] Context injection error:', err.message);
     }
+
+    const contextText = parts.join('\n\n');
 
     if (!contextText) {
         setExtensionPrompt(MODULE_NAME, '', extension_prompt_types.NONE, 0);

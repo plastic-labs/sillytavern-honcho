@@ -62,11 +62,13 @@ The extension has two parts:
 
 ### Context modes
 
+Every generation injects the peer representation and session summary from `session.context()` as a base layer. The mode controls what happens on top:
+
 | Mode | Behavior |
 | --- | --- |
-| **Pre-fetch** (default) | Queries Honcho before every generation and injects the result into the prompt |
-| **Tool call** | Registers function tools the LLM can call on demand (query, save observation, search) |
-| **Context()** | Uses Honcho's session context endpoint with configurable token budget |
+| **Context()** (default) | Base layer only -- peer representation + session summary |
+| **Pre-fetch** | Base layer + dialectic `peer.chat()` queries for deeper reasoning |
+| **Tool call** | Base layer + function tools the LLM can call on demand (query, save observation, search) |
 
 ### Peer modes
 
