@@ -107,8 +107,8 @@
                     </label>
                     <label>
                         <input type="radio" name="honcho_context_mode" value="prefetch" />
-                        <span>Pre-fetch</span>
-                        <i class="fa-solid fa-info-circle" title="Context + dialectic peer.chat() queries on an interval."></i>
+                        <span>Reasoning</span>
+                        <i class="fa-solid fa-info-circle" title="Context + dialectic reasoning queries on an interval."></i>
                     </label>
                     <label>
                         <input type="radio" name="honcho_context_mode" value="tool_call" />
@@ -117,13 +117,13 @@
                     </label>
                 </div>
 
-                <!-- Pre-fetch settings (shown when prefetch mode) -->
+                <!-- Reasoning settings (shown when reasoning mode) -->
                 <div id="honcho_prefetch_section" class="honcho_section">
-                    <label for="honcho_prefetch_queries">Queries (one per line)</label>
+                    <label for="honcho_prefetch_queries">Reasoning queries (one per line)</label>
                     <textarea id="honcho_prefetch_queries" class="text_pole textarea_compact" rows="3" placeholder="Use {{message}} for the user's last message&#10;e.g. Based on: &quot;{{message}}&quot;, what's relevant about the user?"></textarea>
-                    <label for="honcho_prefetch_interval">Run every N turns</label>
+                    <label for="honcho_prefetch_interval">Reason every N turns</label>
                     <input id="honcho_prefetch_interval" type="number" class="text_pole" min="1" max="100" value="8" />
-                    <i class="fa-solid fa-info-circle" style="opacity: 0.6; font-size: 0.85em;" title="Always runs on session start. Higher = less API cost, lower = fresher dialectic reasoning."></i>
+                    <i class="fa-solid fa-info-circle" style="opacity: 0.6; font-size: 0.85em;" title="Always runs on session start. Cached results served instantly between refreshes."></i>
                 </div>
 
                 <hr />

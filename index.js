@@ -46,12 +46,15 @@ const defaultSettings = {
 
 let sessionSetupInProgress = false;
 let lastGenerationChatIndex = -1;
-let turnsSinceLastPrefetch = Infinity; // Infinity ensures first turn always fires
+let turnsSinceLastReasoning = Infinity; // Infinity ensures first turn always fires
 
-/** Stale-while-revalidate cache for session.context() base layer. */
+/** Stale-while-revalidate caches. */
 let cachedContextText = null;
 let contextRefreshInFlight = false;
-let turnsSinceLastContextRefresh = Infinity; // Infinity ensures first turn blocks
+let turnsSinceLastContextRefresh = Infinity;
+
+let cachedReasoningText = null;
+let reasoningRefreshInFlight = false;
 
 /** Cache for late-arriving query results. Key = cache key, Value = result string. */
 const lateResultCache = new Map();
@@ -230,10 +233,12 @@ async function onChatChanged() {
 
     // Reset all caches and guards for the new session
     lastGenerationChatIndex = -1;
-    turnsSinceLastPrefetch = Infinity;
+    turnsSinceLastReasoning = Infinity;
     turnsSinceLastContextRefresh = Infinity;
     cachedContextText = null;
     contextRefreshInFlight = false;
+    cachedReasoningText = null;
+    reasoningRefreshInFlight = false;
 
     const rawChatId = getCurrentChatId();
     if (!rawChatId) {
@@ -324,6 +329,35 @@ async function onChatChanged() {
 }
 
 /**
+ * Run dialectic peer.chat() queries and return combined result string.
+ * Used by the reasoning layer (stale-while-revalidate).
+ */
+async function fetchReasoningQueries(honchoMeta, lastUserMessage) {
+    const queries = settings().prefetchQueries || [];
+    const results = [];
+
+    for (const query of queries) {
+        let trimmed = query.trim();
+        if (!trimmed) continue;
+
+        trimmed = trimmed.replace(/\{\{message\}\}/gi, lastUserMessage);
+
+        const result = await honchoFetchRaw('/chat', {
+            workspaceId: settings().workspaceId,
+            peerId: honchoMeta.userPeerId,
+            query: trimmed,
+            sessionId: honchoMeta.sessionId,
+        });
+
+        if (result?.response) {
+            results.push(result.response);
+        }
+    }
+
+    return results.length > 0 ? results.join('\n\n') : null;
+}
+
+/**
  * GENERATION_AFTER_COMMANDS — Inject context before generation.
  */
 async function onGeneration() {
@@ -390,31 +424,34 @@ async function onGeneration() {
             parts.push(cachedContextText);
         }
 
-        // Prefetch layer: run dialectic peer.chat() queries every N turns
-        const interval = settings().prefetchInterval || 10;
-        turnsSinceLastPrefetch++;
+        // Reasoning layer: dialectic peer.chat() with stale-while-revalidate
+        if (mode === 'prefetch') {
+            const reasoningInterval = settings().prefetchInterval || 8;
+            turnsSinceLastReasoning++;
 
-        if (mode === 'prefetch' && turnsSinceLastPrefetch >= interval) {
-            turnsSinceLastPrefetch = 0;
-            const queries = settings().prefetchQueries || [];
-
-            for (const query of queries) {
-                let trimmed = query.trim();
-                if (!trimmed) continue;
-
-                // Replace {{message}} with the user's last message
-                trimmed = trimmed.replace(/\{\{message\}\}/gi, lastUserMessage);
-
-                const cacheKey = `prefetch:${honchoMeta.sessionId}:${trimmed.slice(0, 40)}`;
-                const result = await honchoFetch('/chat', {
-                    peerId: honchoMeta.userPeerId,
-                    query: trimmed,
-                    sessionId: honchoMeta.sessionId,
-                }, 15000, cacheKey);
-
-                if (result?.response) {
-                    parts.push(result.response);
+            if (cachedReasoningText === null) {
+                // First turn of session — blocking fetch
+                const results = await fetchReasoningQueries(honchoMeta, lastUserMessage);
+                if (results) {
+                    cachedReasoningText = results;
                 }
+                turnsSinceLastReasoning = 0;
+            } else if (turnsSinceLastReasoning >= reasoningInterval && !reasoningRefreshInFlight) {
+                // Background refresh — serve stale, update for next turn
+                turnsSinceLastReasoning = 0;
+                reasoningRefreshInFlight = true;
+                fetchReasoningQueries(honchoMeta, lastUserMessage)
+                    .then(results => {
+                        if (results) {
+                            cachedReasoningText = results;
+                        }
+                    })
+                    .catch(() => {})
+                    .finally(() => { reasoningRefreshInFlight = false; });
+            }
+
+            if (cachedReasoningText) {
+                parts.push(cachedReasoningText);
             }
         }
     } catch (err) {
