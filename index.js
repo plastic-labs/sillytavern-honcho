@@ -35,6 +35,7 @@ const defaultSettings = {
     customSessionName: '',
     contextMode: 'context',
     prefetchQueries: ['What do you know about the user?'],
+    prefetchInterval: 5,
     injectionPosition: extension_prompt_types.IN_PROMPT,
     injectionDepth: 4,
     promptTemplate: '[Honcho Memory]\n{{text}}',
@@ -44,6 +45,7 @@ const defaultSettings = {
 
 let sessionSetupInProgress = false;
 let lastGenerationChatIndex = -1;
+let turnsSinceLastPrefetch = Infinity; // Infinity ensures first turn always fires
 
 /** Cache for late-arriving query results. Key = cache key, Value = result string. */
 const lateResultCache = new Map();
@@ -220,8 +222,9 @@ async function onChatChanged() {
         return;
     }
 
-    // Reset dedup guard so the next generation isn't skipped
+    // Reset guards so the next generation isn't skipped and prefetch fires on first turn
     lastGenerationChatIndex = -1;
+    turnsSinceLastPrefetch = Infinity;
 
     const rawChatId = getCurrentChatId();
     if (!rawChatId) {
@@ -354,8 +357,12 @@ async function onGeneration() {
             parts.push(contextResult.context);
         }
 
-        // Prefetch layer: also run dialectic peer.chat() queries
-        if (mode === 'prefetch') {
+        // Prefetch layer: run dialectic peer.chat() queries every N turns
+        const interval = settings().prefetchInterval || 5;
+        turnsSinceLastPrefetch++;
+
+        if (mode === 'prefetch' && turnsSinceLastPrefetch >= interval) {
+            turnsSinceLastPrefetch = 0;
             const queries = settings().prefetchQueries || [];
 
             for (const query of queries) {
@@ -623,6 +630,7 @@ function loadSettingsUI() {
     $('#honcho_custom_session').val(s.customSessionName || '');
     $(`input[name="honcho_context_mode"][value="${s.contextMode}"]`).prop('checked', true);
     $('#honcho_prefetch_queries').val((s.prefetchQueries || []).join('\n'));
+    $('#honcho_prefetch_interval').val(s.prefetchInterval || 5);
     $(`input[name="honcho_injection_position"][value="${s.injectionPosition}"]`).prop('checked', true);
     $('#honcho_injection_depth').val(s.injectionDepth);
     $('#honcho_prompt_template').val(s.promptTemplate);
@@ -722,6 +730,11 @@ function bindSettingsListeners() {
 
     $('#honcho_prefetch_queries').on('input', function () {
         settings().prefetchQueries = $(this).val().split('\n').filter(q => q.trim());
+        saveSettingsDebounced();
+    });
+
+    $('#honcho_prefetch_interval').on('input', function () {
+        settings().prefetchInterval = Math.max(1, Number($(this).val()) || 5);
         saveSettingsDebounced();
     });
 
