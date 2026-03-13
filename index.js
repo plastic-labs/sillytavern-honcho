@@ -35,7 +35,7 @@ const defaultSettings = {
     customSessionName: '',
     contextMode: 'context',
     prefetchQueries: ['What do you know about the user?'],
-    prefetchInterval: 10,
+    prefetchInterval: 8,
     injectionPosition: extension_prompt_types.IN_PROMPT,
     injectionDepth: 4,
     promptTemplate: '[Honcho Memory]\n{{text}}',
@@ -630,7 +630,7 @@ function loadSettingsUI() {
     $('#honcho_custom_session').val(s.customSessionName || '');
     $(`input[name="honcho_context_mode"][value="${s.contextMode}"]`).prop('checked', true);
     $('#honcho_prefetch_queries').val((s.prefetchQueries || []).join('\n'));
-    $('#honcho_prefetch_interval').val(s.prefetchInterval || 10);
+    $('#honcho_prefetch_interval').val(s.prefetchInterval || 8);
     $(`input[name="honcho_injection_position"][value="${s.injectionPosition}"]`).prop('checked', true);
     $('#honcho_injection_depth').val(s.injectionDepth);
     $('#honcho_prompt_template').val(s.promptTemplate);
@@ -734,7 +734,7 @@ function bindSettingsListeners() {
     });
 
     $('#honcho_prefetch_interval').on('input', function () {
-        settings().prefetchInterval = Math.max(1, Number($(this).val()) || 10);
+        settings().prefetchInterval = Math.max(1, Number($(this).val()) || 8);
         saveSettingsDebounced();
     });
 
