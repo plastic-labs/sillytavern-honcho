@@ -47,6 +47,10 @@ let sessionSetupInProgress = false;
 let lastGenerationChatIndex = -1;
 let turnsSinceLastPrefetch = Infinity; // Infinity ensures first turn always fires
 
+/** Stale-while-revalidate cache for session.context() base layer. */
+let cachedContextText = null;
+let contextRefreshInFlight = false;
+
 /** Cache for late-arriving query results. Key = cache key, Value = result string. */
 const lateResultCache = new Map();
 /** In-flight background promises that outlived their timeout. Key = cache key. */
@@ -222,9 +226,11 @@ async function onChatChanged() {
         return;
     }
 
-    // Reset guards so the next generation isn't skipped and prefetch fires on first turn
+    // Reset all caches and guards for the new session
     lastGenerationChatIndex = -1;
     turnsSinceLastPrefetch = Infinity;
+    cachedContextText = null;
+    contextRefreshInFlight = false;
 
     const rawChatId = getCurrentChatId();
     if (!rawChatId) {
@@ -345,16 +351,36 @@ async function onGeneration() {
     const parts = [];
 
     try {
-        // Base layer: always fetch session context (peer representation + summary)
-        const contextResult = await honchoFetch('/context', {
+        // Base layer: session.context() with stale-while-revalidate
+        // First turn (no cache): blocking fetch. Subsequent turns: serve cache, refresh in background.
+        const contextBody = {
             sessionId: honchoMeta.sessionId,
             userPeerId: honchoMeta.userPeerId,
             tokens: settings().contextTokens,
             summary: settings().contextSummary,
-        });
+        };
 
-        if (contextResult?.context) {
-            parts.push(contextResult.context);
+        if (cachedContextText === null) {
+            // First turn of session — blocking fetch, must wait
+            const contextResult = await honchoFetch('/context', contextBody);
+            if (contextResult?.context) {
+                cachedContextText = contextResult.context;
+            }
+        } else if (!contextRefreshInFlight) {
+            // Background refresh for next turn
+            contextRefreshInFlight = true;
+            honchoFetchRaw('/context', { workspaceId: settings().workspaceId, ...contextBody })
+                .then(result => {
+                    if (result?.context) {
+                        cachedContextText = result.context;
+                    }
+                })
+                .catch(() => {})
+                .finally(() => { contextRefreshInFlight = false; });
+        }
+
+        if (cachedContextText) {
+            parts.push(cachedContextText);
         }
 
         // Prefetch layer: run dialectic peer.chat() queries every N turns
