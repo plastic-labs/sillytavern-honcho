@@ -62,12 +62,12 @@ The extension has two parts:
 
 ### Context modes
 
-Every generation injects the peer representation and session summary from `session.context()` as a base layer. The mode controls what happens on top:
+Every generation injects the peer representation and session summary from `session.context()` as a base layer (stale-while-revalidate -- zero latency after first turn, configurable refresh interval). The enrichment mode controls what happens on top:
 
 | Mode | Behavior |
 | --- | --- |
-| **Context()** (default) | Base layer only -- peer representation + session summary |
-| **Pre-fetch** | Base layer + dialectic `peer.chat()` queries for deeper reasoning |
+| **Context only** (default) | Base layer only -- peer representation + session summary |
+| **Pre-fetch** | Base layer + dialectic `peer.chat()` queries on an interval |
 | **Tool call** | Base layer + function tools the LLM can call on demand (query, save observation, search) |
 
 ### Peer modes

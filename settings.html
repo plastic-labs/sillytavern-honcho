@@ -81,23 +81,39 @@
 
                 <hr />
 
-                <!-- Context Mode -->
-                <span class="honcho_section_label">Context Mode</span>
+                <!-- Context Settings (always visible — base layer for all modes) -->
+                <span class="honcho_section_label">Context</span>
+                <div class="honcho_section">
+                    <label for="honcho_context_tokens">Token budget</label>
+                    <input id="honcho_context_tokens" type="number" class="text_pole" min="100" max="10000" value="2000" />
+                    <label for="honcho_context_interval">Refresh every N turns</label>
+                    <input id="honcho_context_interval" type="number" class="text_pole" min="1" max="100" value="1" />
+                    <i class="fa-solid fa-info-circle" style="opacity: 0.6; font-size: 0.85em;" title="Always fetched on session start. Cached results served instantly between refreshes (stale-while-revalidate)."></i>
+                    <label class="checkbox_label" for="honcho_context_summary">
+                        <input type="checkbox" id="honcho_context_summary" />
+                        <span>Include session summary</span>
+                    </label>
+                </div>
+
+                <hr />
+
+                <!-- Enrichment Mode -->
+                <span class="honcho_section_label">Enrichment Mode</span>
                 <div class="radio_group">
+                    <label>
+                        <input type="radio" name="honcho_context_mode" value="context" />
+                        <span>Context only</span>
+                        <i class="fa-solid fa-info-circle" title="Peer representation and session summary only."></i>
+                    </label>
                     <label>
                         <input type="radio" name="honcho_context_mode" value="prefetch" />
                         <span>Pre-fetch</span>
-                        <i class="fa-solid fa-info-circle" title="Query Honcho before generation and inject the result into the prompt."></i>
+                        <i class="fa-solid fa-info-circle" title="Context + dialectic peer.chat() queries on an interval."></i>
                     </label>
                     <label>
                         <input type="radio" name="honcho_context_mode" value="tool_call" />
                         <span>Tool call</span>
-                        <i class="fa-solid fa-info-circle" title="Register a function tool the LLM can call to query Honcho memory on demand."></i>
-                    </label>
-                    <label>
-                        <input type="radio" name="honcho_context_mode" value="context" />
-                        <span>Context()</span>
-                        <i class="fa-solid fa-info-circle" title="Use Honcho's session context endpoint to get a summarized context window."></i>
+                        <i class="fa-solid fa-info-circle" title="Context + function tools the LLM can call on demand."></i>
                     </label>
                 </div>
 
@@ -108,16 +124,6 @@
                     <label for="honcho_prefetch_interval">Run every N turns</label>
                     <input id="honcho_prefetch_interval" type="number" class="text_pole" min="1" max="100" value="8" />
                     <i class="fa-solid fa-info-circle" style="opacity: 0.6; font-size: 0.85em;" title="Always runs on session start. Higher = less API cost, lower = fresher dialectic reasoning."></i>
-                </div>
-
-                <!-- Context() settings (shown when context mode) -->
-                <div id="honcho_context_section" class="honcho_section">
-                    <label for="honcho_context_tokens">Token budget</label>
-                    <input id="honcho_context_tokens" type="number" class="text_pole" min="100" max="10000" value="2000" />
-                    <label class="checkbox_label" for="honcho_context_summary">
-                        <input type="checkbox" id="honcho_context_summary" />
-                        <span>Include session summary</span>
-                    </label>
                 </div>
 
                 <hr />

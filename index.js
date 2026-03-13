@@ -40,6 +40,7 @@ const defaultSettings = {
     injectionDepth: 4,
     promptTemplate: '[Honcho Memory]\n{{text}}',
     contextTokens: 2000,
+    contextInterval: 1,
     contextSummary: true,
 };
 
@@ -50,6 +51,7 @@ let turnsSinceLastPrefetch = Infinity; // Infinity ensures first turn always fir
 /** Stale-while-revalidate cache for session.context() base layer. */
 let cachedContextText = null;
 let contextRefreshInFlight = false;
+let turnsSinceLastContextRefresh = Infinity; // Infinity ensures first turn blocks
 
 /** Cache for late-arriving query results. Key = cache key, Value = result string. */
 const lateResultCache = new Map();
@@ -229,6 +231,7 @@ async function onChatChanged() {
     // Reset all caches and guards for the new session
     lastGenerationChatIndex = -1;
     turnsSinceLastPrefetch = Infinity;
+    turnsSinceLastContextRefresh = Infinity;
     cachedContextText = null;
     contextRefreshInFlight = false;
 
@@ -352,13 +355,15 @@ async function onGeneration() {
 
     try {
         // Base layer: session.context() with stale-while-revalidate
-        // First turn (no cache): blocking fetch. Subsequent turns: serve cache, refresh in background.
+        // First turn (no cache): blocking fetch. Subsequent turns: serve cache, background refresh on interval.
         const contextBody = {
             sessionId: honchoMeta.sessionId,
             userPeerId: honchoMeta.userPeerId,
             tokens: settings().contextTokens,
             summary: settings().contextSummary,
         };
+        const contextInterval = settings().contextInterval || 1;
+        turnsSinceLastContextRefresh++;
 
         if (cachedContextText === null) {
             // First turn of session — blocking fetch, must wait
@@ -366,8 +371,10 @@ async function onGeneration() {
             if (contextResult?.context) {
                 cachedContextText = contextResult.context;
             }
-        } else if (!contextRefreshInFlight) {
-            // Background refresh for next turn
+            turnsSinceLastContextRefresh = 0;
+        } else if (turnsSinceLastContextRefresh >= contextInterval && !contextRefreshInFlight) {
+            // Background refresh — serve stale, update for next turn
+            turnsSinceLastContextRefresh = 0;
             contextRefreshInFlight = true;
             honchoFetchRaw('/context', { workspaceId: settings().workspaceId, ...contextBody })
                 .then(result => {
@@ -632,7 +639,6 @@ function updateStatusIndicator() {
 function updateConditionalSections() {
     const mode = settings()?.contextMode;
     $('#honcho_prefetch_section').toggle(mode === 'prefetch');
-    $('#honcho_context_section').toggle(mode === 'context');
 
     const position = Number(settings()?.injectionPosition);
     $('#honcho_depth_section').toggle(position === extension_prompt_types.IN_CHAT);
@@ -661,6 +667,7 @@ function loadSettingsUI() {
     $('#honcho_injection_depth').val(s.injectionDepth);
     $('#honcho_prompt_template').val(s.promptTemplate);
     $('#honcho_context_tokens').val(s.contextTokens);
+    $('#honcho_context_interval').val(s.contextInterval || 1);
     $('#honcho_context_summary').prop('checked', s.contextSummary);
 
     // Show global config source info
@@ -782,6 +789,11 @@ function bindSettingsListeners() {
 
     $('#honcho_context_tokens').on('input', function () {
         settings().contextTokens = Number($(this).val());
+        saveSettingsDebounced();
+    });
+
+    $('#honcho_context_interval').on('input', function () {
+        settings().contextInterval = Math.max(1, Number($(this).val()) || 1);
         saveSettingsDebounced();
     });
 
