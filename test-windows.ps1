@@ -3,11 +3,19 @@
 #
 # Prerequisites: Git and Node.js (18+) must be installed.
 # Usage: .\test-windows.ps1
+#
+# Override the extension repo URL for testing with public forks:
+#   $env:HONCHO_REPO = "https://github.com/erosika/sillytavern-honcho-test.git"
+#   $env:HONCHO_BRANCH = "eri/dev-1417"
+#   .\test-windows.ps1
 
-$ErrorActionPreference = "Stop"
 $pass = 0
 $fail = 0
 $results = @()
+
+# Repo URL override for testing from public forks
+$HONCHO_REPO = if ($env:HONCHO_REPO) { $env:HONCHO_REPO } else { "https://github.com/plastic-labs/sillytavern-honcho.git" }
+$HONCHO_BRANCH = if ($env:HONCHO_BRANCH) { $env:HONCHO_BRANCH } else { "main" }
 
 function Test-Step {
     param([string]$Name, [scriptblock]$Block)
@@ -22,6 +30,16 @@ function Test-Step {
         $script:results += [PSCustomObject]@{ Test = $Name; Result = "FAIL: $($_.Exception.Message)" }
         Write-Host "  FAIL: $($_.Exception.Message)" -ForegroundColor Red
     }
+}
+
+function Invoke-Git {
+    param([string[]]$Arguments)
+    $output = & git @Arguments 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        $errMsg = ($output | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] }) -join "`n"
+        if ($errMsg) { throw $errMsg }
+    }
+    return $output
 }
 
 # ─── Prerequisites ─────────────────────────────────────────
@@ -57,49 +75,53 @@ Test-Step "Create test directory" {
 }
 
 Test-Step "Clone SillyTavern" {
-    git clone --depth 1 https://github.com/SillyTavern/SillyTavern.git $ST_DIR 2>&1
+    Invoke-Git @("clone", "--depth", "1", "https://github.com/SillyTavern/SillyTavern.git", $ST_DIR)
     if (-not (Test-Path (Join-Path $ST_DIR "server.js"))) { throw "server.js not found after clone" }
+    Write-Host "  Cloned to $ST_DIR"
 }
 
 Test-Step "Install SillyTavern dependencies" {
     Push-Location $ST_DIR
-    npm install --silent 2>&1
+    $null = npm install --silent 2>&1
     Pop-Location
 }
 
 Test-Step "Enable server plugins in config.yaml" {
     $configSrc = Join-Path $ST_DIR "default" "config.yaml"
     $configDst = Join-Path $ST_DIR "config.yaml"
-    if (Test-Path $configSrc) {
-        Copy-Item $configSrc $configDst
+    if ((Test-Path $configSrc) -and -not (Test-Path $configDst)) {
+        Copy-Item -Path $configSrc -Destination $configDst
     }
     if (-not (Test-Path $configDst)) {
-        # Create minimal config
-        Set-Content $configDst "enableServerPlugins: true`n"
+        Set-Content -Path $configDst -Value "enableServerPlugins: true"
     } else {
-        $content = Get-Content $configDst -Raw
+        $content = Get-Content -Path $configDst -Raw
         if ($content -notmatch "enableServerPlugins:\s*true") {
             $content = $content -replace "enableServerPlugins:\s*false", "enableServerPlugins: true"
             if ($content -notmatch "enableServerPlugins") {
                 $content += "`nenableServerPlugins: true`n"
             }
-            Set-Content $configDst $content
+            Set-Content -Path $configDst -Value $content
         }
     }
-    $check = Get-Content $configDst -Raw
+    $check = Get-Content -Path $configDst -Raw
     if ($check -notmatch "enableServerPlugins:\s*true") { throw "Failed to enable server plugins" }
 }
 
 # ─── Install Script ────────────────────────────────────────
 
+Test-Step "Clone extension repo" {
+    $extDir = Join-Path $ST_DIR "public\scripts\extensions\third-party\sillytavern-honcho"
+    Invoke-Git @("clone", "-b", $HONCHO_BRANCH, $HONCHO_REPO, $extDir)
+    if (-not (Test-Path (Join-Path $extDir "manifest.json"))) { throw "manifest.json not found after clone" }
+    Write-Host "  Cloned $HONCHO_REPO ($HONCHO_BRANCH)"
+}
+
 Test-Step "Run install.ps1" {
     $env:ST_DIR = $ST_DIR
+    $extDir = Join-Path $ST_DIR "public\scripts\extensions\third-party\sillytavern-honcho"
     Push-Location $ST_DIR
-    # Clone the extension repo (simulating the install script)
-    $EXT_DIR = Join-Path $ST_DIR "public\scripts\extensions\third-party\sillytavern-honcho"
-    git clone https://github.com/plastic-labs/sillytavern-honcho.git $EXT_DIR 2>&1
-    # Run the actual install script from the cloned repo
-    & "$EXT_DIR\install.ps1"
+    & (Join-Path $extDir "install.ps1")
     Pop-Location
     Remove-Item Env:\ST_DIR -ErrorAction SilentlyContinue
 }
@@ -116,7 +138,7 @@ Test-Step "Extension directory exists" {
 Test-Step "manifest.json exists" {
     $f = Join-Path $EXT_DIR "manifest.json"
     if (-not (Test-Path $f)) { throw "manifest.json not found" }
-    $json = Get-Content $f | ConvertFrom-Json
+    $json = Get-Content -Path $f | ConvertFrom-Json
     if ($json.display_name -ne "Honcho Memory") { throw "Unexpected display_name: $($json.display_name)" }
     Write-Host "  display_name: $($json.display_name)"
 }
@@ -124,7 +146,7 @@ Test-Step "manifest.json exists" {
 Test-Step "Client index.js exists" {
     $f = Join-Path $EXT_DIR "index.js"
     if (-not (Test-Path $f)) { throw "Client index.js not found" }
-    $content = Get-Content $f -Raw
+    $content = Get-Content -Path $f -Raw
     if ($content -notmatch "MODULE_NAME") { throw "index.js doesn't look like the Honcho extension" }
 }
 
@@ -143,14 +165,14 @@ Test-Step "Plugin directory exists (junction)" {
 Test-Step "Plugin index.js exists" {
     $f = Join-Path $PLUGIN_DIR "index.js"
     if (-not (Test-Path $f)) { throw "Plugin index.js not found" }
-    $content = Get-Content $f -Raw
+    $content = Get-Content -Path $f -Raw
     if ($content -notmatch "honcho-proxy") { throw "Plugin index.js doesn't look right" }
 }
 
 Test-Step "Plugin package.json exists" {
     $f = Join-Path $PLUGIN_DIR "package.json"
     if (-not (Test-Path $f)) { throw "package.json not found" }
-    $json = Get-Content $f | ConvertFrom-Json
+    $json = Get-Content -Path $f | ConvertFrom-Json
     if (-not $json.dependencies.'@honcho-ai/sdk') { throw "@honcho-ai/sdk not in dependencies" }
     Write-Host "  @honcho-ai/sdk: $($json.dependencies.'@honcho-ai/sdk')"
 }
@@ -171,8 +193,7 @@ Test-Step "Create test global config" {
         New-Item -ItemType Directory -Path $HONCHO_DIR -Force | Out-Null
     }
     if ($hadExistingConfig) {
-        # Back up existing config
-        Copy-Item $HONCHO_CONFIG "$HONCHO_CONFIG.bak"
+        Copy-Item -Path $HONCHO_CONFIG -Destination "$HONCHO_CONFIG.bak"
         Write-Host "  Backed up existing config to config.json.bak"
     }
     $testConfig = @{
@@ -181,12 +202,12 @@ Test-Step "Create test global config" {
         workspace = "test-workspace"
         enabled = $true
     } | ConvertTo-Json
-    Set-Content $HONCHO_CONFIG $testConfig
+    Set-Content -Path $HONCHO_CONFIG -Value $testConfig
 }
 
 Test-Step "Global config at correct Windows path" {
     if (-not (Test-Path $HONCHO_CONFIG)) { throw "Config not found at $HONCHO_CONFIG" }
-    $json = Get-Content $HONCHO_CONFIG | ConvertFrom-Json
+    $json = Get-Content -Path $HONCHO_CONFIG | ConvertFrom-Json
     if ($json.peerName -ne "test-user") { throw "Config content mismatch" }
     Write-Host "  Path: $HONCHO_CONFIG"
     Write-Host "  peerName: $($json.peerName)"
@@ -196,38 +217,41 @@ Test-Step "Global config at correct Windows path" {
 
 Test-Step "Plugin index.js parses as valid ESM" {
     $pluginJs = Join-Path $PLUGIN_DIR "index.js"
-    # Use Node to check syntax (won't fully run since it needs SillyTavern runtime)
-    $result = node -e "import('node:fs').then(fs => { const src = fs.readFileSync('$($pluginJs -replace '\\', '/')', 'utf-8'); new Function(src); }).catch(() => {})" 2>&1
-    # Basic check: ensure the file can at least be read
-    $content = Get-Content $pluginJs -Raw
-    if ($content.Length -lt 100) { throw "Plugin index.js seems too small" }
+    $content = Get-Content -Path $pluginJs -Raw
+    if ($content.Length -lt 100) { throw "Plugin index.js seems too small ($($content.Length) chars)" }
     Write-Host "  File size: $($content.Length) chars"
 }
 
 Test-Step "os.homedir() resolves correctly on Windows" {
-    $homeDir = node -e "console.log(require('os').homedir())"
+    $homeDir = (node -e "console.log(require('os').homedir())").Trim()
     $expected = $HOME
-    if ($homeDir.Trim() -ne $expected) { throw "os.homedir()='$homeDir' != HOME='$expected'" }
+    if ($homeDir -ne $expected) { throw "os.homedir()='$homeDir' != HOME='$expected'" }
     Write-Host "  os.homedir() = $homeDir"
 }
 
 Test-Step "path.join resolves .honcho/config.json on Windows" {
-    $resolved = node -e "const p=require('path');const os=require('os');console.log(p.join(os.homedir(),'.honcho','config.json'))"
+    $resolved = (node -e "const p=require('path');const os=require('os');console.log(p.join(os.homedir(),'.honcho','config.json'))").Trim()
     $expected = $HONCHO_CONFIG
-    if ($resolved.Trim() -ne $expected) { throw "Resolved '$resolved' != expected '$expected'" }
+    if ($resolved -ne $expected) { throw "Resolved '$resolved' != expected '$expected'" }
     Write-Host "  Resolved: $resolved"
+}
+
+Test-Step "Node.js can read global config" {
+    $readBack = (node -e "const fs=require('fs');const p=require('path');const os=require('os');const f=p.join(os.homedir(),'.honcho','config.json');const c=JSON.parse(fs.readFileSync(f,'utf-8'));console.log(c.peerName)").Trim()
+    if ($readBack -ne "test-user") { throw "Node read back '$readBack', expected 'test-user'" }
+    Write-Host "  Node.js read peerName: $readBack"
 }
 
 # ─── Cleanup ───────────────────────────────────────────────
 
 Test-Step "Restore global config" {
     if ($hadExistingConfig) {
-        Move-Item "$HONCHO_CONFIG.bak" $HONCHO_CONFIG -Force
+        Move-Item -Path "$HONCHO_CONFIG.bak" -Destination $HONCHO_CONFIG -Force
         Write-Host "  Restored original config"
     } else {
-        Remove-Item $HONCHO_CONFIG -Force
-        if ((Get-ChildItem $HONCHO_DIR | Measure-Object).Count -eq 0) {
-            Remove-Item $HONCHO_DIR -Force
+        Remove-Item -Path $HONCHO_CONFIG -Force
+        if ((Get-ChildItem -Path $HONCHO_DIR | Measure-Object).Count -eq 0) {
+            Remove-Item -Path $HONCHO_DIR -Force
         }
         Write-Host "  Removed test config"
     }

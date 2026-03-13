@@ -8,9 +8,7 @@
 #   Or if you've already cloned the repo:
 #     cd SillyTavern; .\path\to\sillytavern-honcho\install.ps1
 
-$ErrorActionPreference = "Stop"
-
-$ST_DIR = if ($env:ST_DIR) { $env:ST_DIR } else { Get-Location }
+$ST_DIR = if ($env:ST_DIR) { $env:ST_DIR } else { (Get-Location).Path }
 $REPO_URL = "https://github.com/plastic-labs/sillytavern-honcho.git"
 $EXT_DIR = Join-Path $ST_DIR "public\scripts\extensions\third-party\sillytavern-honcho"
 $PLUGIN_DIR = Join-Path $ST_DIR "plugins\honcho-proxy"
@@ -29,14 +27,17 @@ Write-Host "    ST directory: $ST_DIR"
 # 1. Install client extension
 if (Test-Path $EXT_DIR) {
     Write-Host "[*] Client extension already exists, pulling latest..."
-    try {
-        git -C $EXT_DIR pull --ff-only 2>$null
-    } catch {
+    $null = git -C $EXT_DIR pull --ff-only 2>&1
+    if ($LASTEXITCODE -ne 0) {
         Write-Host "    (pull skipped -- not a git repo or has local changes)"
     }
 } else {
     Write-Host "[*] Cloning client extension..."
-    git clone $REPO_URL $EXT_DIR
+    $null = git clone $REPO_URL $EXT_DIR 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "[!] Failed to clone extension repo"
+        exit 1
+    }
 }
 
 # 2. Set up server plugin (directory junction from extension's plugin/ dir)
@@ -45,19 +46,23 @@ if (Test-Path $PLUGIN_DIR) {
 } else {
     Write-Host "[*] Creating directory junction for server plugin..."
     $pluginSource = Join-Path $EXT_DIR "plugin"
-    cmd /c mklink /J $PLUGIN_DIR $pluginSource
+    $null = cmd /c mklink /J "`"$PLUGIN_DIR`"" "`"$pluginSource`"" 2>&1
+    if (-not (Test-Path $PLUGIN_DIR)) {
+        Write-Host "[!] Failed to create junction. Try running PowerShell as Administrator."
+        exit 1
+    }
 }
 
 # 3. Install SDK dependencies
 Write-Host "[*] Installing @honcho-ai/sdk..."
 Push-Location $PLUGIN_DIR
-npm install --silent
+$null = npm install --silent 2>&1
 Pop-Location
 
 # 4. Check config.yaml for server plugins
 $CONFIG = Join-Path $ST_DIR "config.yaml"
 if (Test-Path $CONFIG) {
-    $content = Get-Content $CONFIG -Raw
+    $content = Get-Content -Path $CONFIG -Raw
     if ($content -match "enableServerPlugins:\s*true") {
         Write-Host "[*] Server plugins already enabled in config.yaml"
     } else {
