@@ -34,7 +34,7 @@ const defaultSettings = {
     peerMode: 'single',
     sessionNaming: 'auto',
     customSessionName: '',
-    contextMode: 'prefetch',
+    contextMode: 'context',
     prefetchQueries: ['What do you know about the user?'],
     injectionPosition: extension_prompt_types.IN_PROMPT,
     injectionDepth: 4,
@@ -216,6 +216,9 @@ async function onChatChanged() {
         console.log('[Honcho] onChatChanged: not ready, skipping');
         return;
     }
+
+    // Reset dedup guard so the next generation isn't skipped
+    lastGenerationChatIndex = -1;
 
     const rawChatId = getCurrentChatId();
     if (!rawChatId) {
@@ -789,8 +792,8 @@ jQuery(async () => {
                     console.log('[Honcho] Auto-enabled from global config');
                 }
 
-                // Sync ST persona name with Honcho peerName
-                if (globalConfig.peerName && name1 !== globalConfig.peerName) {
+                // Sync ST persona name with Honcho peerName (only if still at default)
+                if (globalConfig.peerName && (!name1 || name1 === 'User')) {
                     setUserName(globalConfig.peerName, { toastPersonaNameChange: false });
                     console.log(`[Honcho] Synced persona name to peerName: ${globalConfig.peerName}`);
                 }

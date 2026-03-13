@@ -400,9 +400,18 @@ export async function init(router) {
             opts.peerPerspective = userPeerId;
 
             const context = await session.context(opts);
-            console.log(`[honcho-proxy] POST /context response="${String(context).slice(0, 120)}..."`);
-            // Return the raw context string representation
-            return res.json({ context: String(context) });
+
+            // SessionContext is a rich object — extract text content from it
+            const parts = [];
+            if (context.peerRepresentation) {
+                parts.push(context.peerRepresentation);
+            }
+            if (context.summary?.content) {
+                parts.push(context.summary.content);
+            }
+            const contextText = parts.join('\n\n') || null;
+            console.log(`[honcho-proxy] POST /context response="${(contextText || '').slice(0, 120)}..." (messages=${context.messages?.length || 0}, summary=${context.summary ? 'yes' : 'no'})`);
+            return res.json({ context: contextText });
         } catch (err) {
             console.error('[honcho-proxy] POST /context error:', err.message);
             return res.status(500).json({ error: err.message });
