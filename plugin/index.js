@@ -420,7 +420,8 @@ export async function init(router) {
 
             const client = await getClient(req.honchoApiKey, req.honchoWorkspaceId);
             const peer = await client.peer(peerId);
-            const conclusion = await peer.createConclusion(content);
+            const results = await peer.conclusions.create({ content });
+            const conclusion = Array.isArray(results) ? results[0] : results;
             console.log(`[honcho-proxy] Conclusion created id="${conclusion.id}"`);
             return res.json({ id: conclusion.id, content: conclusion.content });
         } catch (err) {

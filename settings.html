@@ -48,6 +48,39 @@
 
                 <hr />
 
+                <!-- Session Naming -->
+                <span class="honcho_section_label">Session Naming</span>
+                <div class="radio_group">
+                    <label>
+                        <input type="radio" name="honcho_session_naming" value="auto" />
+                        <span>Auto</span>
+                        <i class="fa-solid fa-info-circle" title="charName-YYYY-MM-DD-hash (one session per ST chat)"></i>
+                    </label>
+                    <label>
+                        <input type="radio" name="honcho_session_naming" value="character" />
+                        <span>Per character</span>
+                        <i class="fa-solid fa-info-circle" title="One persistent session per character (all chats shared)"></i>
+                    </label>
+                    <label>
+                        <input type="radio" name="honcho_session_naming" value="custom" />
+                        <span>Custom</span>
+                        <i class="fa-solid fa-info-circle" title="Set your own session name"></i>
+                    </label>
+                </div>
+
+                <div id="honcho_custom_session_section" class="honcho_section">
+                    <label for="honcho_custom_session">Session name</label>
+                    <input id="honcho_custom_session" type="text" class="text_pole" placeholder="e.g. my-session-name" />
+                </div>
+
+                <!-- Current session (editable to rename) -->
+                <div id="honcho_active_session_section" class="honcho_section">
+                    <label>Active session</label>
+                    <input id="honcho_active_session" type="text" class="text_pole" placeholder="No active session" />
+                </div>
+
+                <hr />
+
                 <!-- Context Mode -->
                 <span class="honcho_section_label">Context Mode</span>
                 <div class="radio_group">

@@ -12,6 +12,8 @@ import {
     characters,
     this_chid,
     chat,
+    setUserName,
+    name1,
 } from '../../../../script.js';
 import {
     extension_settings,
@@ -30,6 +32,8 @@ const defaultSettings = {
     enabled: false,
     workspaceId: '',
     peerMode: 'single',
+    sessionNaming: 'auto',
+    customSessionName: '',
     contextMode: 'prefetch',
     prefetchQueries: ['What do you know about the user?'],
     injectionPosition: extension_prompt_types.IN_PROMPT,
@@ -219,17 +223,26 @@ async function onChatChanged() {
         return;
     }
 
-    // Build a readable session ID: "charName-YYYY-MM-DD-hash"
-    // Use a short hash of the raw ID for uniqueness while keeping it human-readable
+    // Build session ID based on naming mode
     const charName = (this_chid !== undefined && characters[this_chid])
         ? characters[this_chid].name
         : 'chat';
-    const dateMatch = rawChatId.match(/(\d{4}-\d{2}-\d{2})/);
-    const dateStr = dateMatch ? dateMatch[1] : new Date().toISOString().slice(0, 10);
-    const shortHash = Array.from(rawChatId)
-        .reduce((h, c) => ((h << 5) - h + c.charCodeAt(0)) | 0, 0)
-        .toString(36).replace('-', '');
-    const chatId = sanitizeId(`${charName}-${dateStr}-${shortHash}`);
+    let chatId;
+    const namingMode = settings().sessionNaming || 'auto';
+
+    if (namingMode === 'custom' && settings().customSessionName) {
+        chatId = sanitizeId(settings().customSessionName);
+    } else if (namingMode === 'character') {
+        chatId = sanitizeId(charName);
+    } else {
+        // auto: "charName-YYYY-MM-DD-hash" (one session per ST chat)
+        const dateMatch = rawChatId.match(/(\d{4}-\d{2}-\d{2})/);
+        const dateStr = dateMatch ? dateMatch[1] : new Date().toISOString().slice(0, 10);
+        const shortHash = Array.from(rawChatId)
+            .reduce((h, c) => ((h << 5) - h + c.charCodeAt(0)) | 0, 0)
+            .toString(36).replace('-', '');
+        chatId = sanitizeId(`${charName}-${dateStr}-${shortHash}`);
+    }
     console.log(`[Honcho] onChatChanged: raw="${rawChatId}" sessionId="${chatId}"`);
 
     // Prevent race if CHAT_CHANGED fires multiple times
@@ -267,6 +280,7 @@ async function onChatChanged() {
                 },
             });
             saveMetadataDebounced();
+            updateActiveSessionDisplay();
             console.log(`[Honcho] Session ready for chat: ${chatId}`);
 
             // Update global config with current aiPeer and session
@@ -585,6 +599,15 @@ function updateConditionalSections() {
 
     const position = Number(settings()?.injectionPosition);
     $('#honcho_depth_section').toggle(position === extension_prompt_types.IN_CHAT);
+
+    const naming = settings()?.sessionNaming || 'auto';
+    $('#honcho_custom_session_section').toggle(naming === 'custom');
+}
+
+/** Update the active session display in settings. */
+function updateActiveSessionDisplay() {
+    const meta = chat_metadata?.honcho;
+    $('#honcho_active_session').val(meta?.sessionId || '');
 }
 
 function loadSettingsUI() {
@@ -592,6 +615,8 @@ function loadSettingsUI() {
     $('#honcho_enabled').prop('checked', s.enabled);
     $('#honcho_workspace_id').val(s.workspaceId);
     $(`input[name="honcho_peer_mode"][value="${s.peerMode}"]`).prop('checked', true);
+    $(`input[name="honcho_session_naming"][value="${s.sessionNaming || 'auto'}"]`).prop('checked', true);
+    $('#honcho_custom_session').val(s.customSessionName || '');
     $(`input[name="honcho_context_mode"][value="${s.contextMode}"]`).prop('checked', true);
     $('#honcho_prefetch_queries').val((s.prefetchQueries || []).join('\n'));
     $(`input[name="honcho_injection_position"][value="${s.injectionPosition}"]`).prop('checked', true);
@@ -621,6 +646,7 @@ function loadSettingsUI() {
 
     updateConditionalSections();
     updateStatusIndicator();
+    updateActiveSessionDisplay();
 }
 
 function bindSettingsListeners() {
@@ -639,6 +665,49 @@ function bindSettingsListeners() {
     $('input[name="honcho_peer_mode"]').on('change', function () {
         settings().peerMode = $(this).val();
         saveSettingsDebounced();
+    });
+
+    $('input[name="honcho_session_naming"]').on('change', function () {
+        settings().sessionNaming = $(this).val();
+        saveSettingsDebounced();
+        updateConditionalSections();
+    });
+
+    $('#honcho_custom_session').on('input', function () {
+        settings().customSessionName = $(this).val().trim();
+        saveSettingsDebounced();
+    });
+
+    // Renaming the active session re-registers it with Honcho
+    $('#honcho_active_session').on('change', async function () {
+        const newName = sanitizeId($(this).val().trim());
+        if (!newName) return;
+        $(this).val(newName);
+
+        const meta = chat_metadata?.honcho;
+        if (!meta) return;
+
+        meta.sessionId = newName;
+        updateChatMetadata({ honcho: meta });
+        saveMetadataDebounced();
+
+        // Re-register session with new name
+        try {
+            await honchoFetch('/session', {
+                sessionId: newName,
+                userPeerId: meta.userPeerId,
+                charPeerId: meta.charPeerId,
+            });
+            // Update global config
+            await fetch(`${PLUGIN_BASE}/config/update`, {
+                method: 'POST',
+                headers: getRequestHeaders(),
+                body: JSON.stringify({ sessionId: newName }),
+            });
+            console.log(`[Honcho] Session renamed to: ${newName}`);
+        } catch (err) {
+            console.error('[Honcho] Session rename error:', err);
+        }
     });
 
     $('input[name="honcho_context_mode"]').on('change', function () {
@@ -718,6 +787,12 @@ jQuery(async () => {
                     settings().enabled = true;
                     changed = true;
                     console.log('[Honcho] Auto-enabled from global config');
+                }
+
+                // Sync ST persona name with Honcho peerName
+                if (globalConfig.peerName && name1 !== globalConfig.peerName) {
+                    setUserName(globalConfig.peerName, { toastPersonaNameChange: false });
+                    console.log(`[Honcho] Synced persona name to peerName: ${globalConfig.peerName}`);
                 }
 
                 if (changed) {
