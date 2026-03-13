@@ -56,7 +56,8 @@ let turnsSinceLastContextRefresh = Infinity;
 let cachedReasoningText = null;
 let reasoningRefreshInFlight = false;
 
-/** Cache for late-arriving query results. Key = cache key, Value = result string. */
+/** Cache for late-arriving query results (tool_call mode). Key = cache key, Value = result string. */
+const MAX_LATE_CACHE = 50;
 const lateResultCache = new Map();
 /** In-flight background promises that outlived their timeout. Key = cache key. */
 const pendingBackgroundQueries = new Map();
@@ -157,7 +158,8 @@ async function honchoFetchRaw(endpoint, body) {
 }
 
 /**
- * Make a request with a soft timeout. If the timeout expires:
+ * Make a request with a soft timeout (used by tool_call mode).
+ * If the timeout expires:
  * - Returns cached result from a previous late arrival (if available)
  * - Keeps the request running in the background and caches its result
  * - Next call with the same cacheKey will pick up the late result
@@ -173,7 +175,6 @@ async function honchoFetch(endpoint, body, timeoutMs = 30000, cacheKey = null) {
     if (cacheKey && lateResultCache.has(cacheKey)) {
         const cached = lateResultCache.get(cacheKey);
         lateResultCache.delete(cacheKey);
-        console.log(`[Honcho] Using cached late result for ${cacheKey}`);
         return cached;
     }
 
@@ -198,17 +199,20 @@ async function honchoFetch(endpoint, body, timeoutMs = 30000, cacheKey = null) {
             fetchPromise,
             new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), timeoutMs)),
         ]);
-        // Completed in time — clean up any pending background query
         pendingBackgroundQueries.delete(cacheKey);
         return result;
     } catch {
         // Timed out — let it run in the background and cache the result
-        console.log(`[Honcho] ${endpoint} timed out after ${timeoutMs}ms, continuing in background (key: ${cacheKey})`);
+        console.warn(`[Honcho] ${endpoint} timed out after ${timeoutMs}ms (key: ${cacheKey})`);
         if (!pendingBackgroundQueries.has(cacheKey)) {
             const bgPromise = fetchPromise.then(result => {
                 if (result) {
+                    // Evict oldest entry if cache is full
+                    if (lateResultCache.size >= MAX_LATE_CACHE) {
+                        const oldest = lateResultCache.keys().next().value;
+                        lateResultCache.delete(oldest);
+                    }
                     lateResultCache.set(cacheKey, result);
-                    console.log(`[Honcho] Late result cached for ${cacheKey}`);
                 }
                 pendingBackgroundQueries.delete(cacheKey);
             }).catch(() => {
@@ -226,10 +230,7 @@ async function honchoFetch(endpoint, body, timeoutMs = 30000, cacheKey = null) {
  * CHAT_CHANGED — Ensure a Honcho session exists for this chat.
  */
 async function onChatChanged() {
-    if (!isReady()) {
-        console.log('[Honcho] onChatChanged: not ready, skipping');
-        return;
-    }
+    if (!isReady()) return;
 
     // Reset all caches and guards for the new session
     lastGenerationChatIndex = -1;
@@ -241,10 +242,7 @@ async function onChatChanged() {
     reasoningRefreshInFlight = false;
 
     const rawChatId = getCurrentChatId();
-    if (!rawChatId) {
-        console.log('[Honcho] onChatChanged: no chat ID');
-        return;
-    }
+    if (!rawChatId) return;
 
     // Build session ID based on naming mode
     const charName = (this_chid !== undefined && characters[this_chid])
@@ -266,25 +264,18 @@ async function onChatChanged() {
             .toString(36).replace('-', '');
         chatId = sanitizeId(`${charName}-${dateStr}-${shortHash}`);
     }
-    console.log(`[Honcho] onChatChanged: raw="${rawChatId}" sessionId="${chatId}"`);
 
     // Prevent race if CHAT_CHANGED fires multiple times
-    if (sessionSetupInProgress) {
-        console.log('[Honcho] onChatChanged: setup already in progress, skipping');
-        return;
-    }
+    if (sessionSetupInProgress) return;
     sessionSetupInProgress = true;
 
     try {
         const userPeerId = getUserPeerId();
         const charPeerId = getCharPeerId();
-        console.log(`[Honcho] Setting up session: user="${userPeerId}" char="${charPeerId}"`);
 
         // Ensure peers exist
-        const userPeer = await honchoFetch('/peer', { peerId: userPeerId, observeMe: true });
-        console.log('[Honcho] User peer result:', userPeer);
-        const charPeer = await honchoFetch('/peer', { peerId: charPeerId, observeMe: false });
-        console.log('[Honcho] Char peer result:', charPeer);
+        await honchoFetch('/peer', { peerId: userPeerId, observeMe: true });
+        await honchoFetch('/peer', { peerId: charPeerId, observeMe: false });
 
         // Ensure session exists with peers
         const result = await honchoFetch('/session', {
@@ -292,7 +283,6 @@ async function onChatChanged() {
             userPeerId,
             charPeerId,
         });
-        console.log('[Honcho] Session result:', result);
 
         if (result) {
             updateChatMetadata({
@@ -304,7 +294,6 @@ async function onChatChanged() {
             });
             saveMetadataDebounced();
             updateActiveSessionDisplay();
-            console.log(`[Honcho] Session ready for chat: ${chatId}`);
 
             // Update global config with current aiPeer and session
             try {
@@ -319,7 +308,7 @@ async function onChatChanged() {
                 });
             } catch { /* best-effort */ }
         } else {
-            console.warn('[Honcho] Session setup failed — result was null');
+            console.warn('[Honcho] Session setup failed');
         }
     } catch (err) {
         console.error('[Honcho] onChatChanged error:', err);
@@ -370,10 +359,7 @@ async function onGeneration() {
 
     // Dedup guard: prevent double-firing for the same chat index
     const currentIndex = chat.length - 1;
-    if (currentIndex >= 0 && currentIndex === lastGenerationChatIndex) {
-        console.log(`[Honcho] onGeneration: skipping duplicate for index ${currentIndex}`);
-        return;
-    }
+    if (currentIndex >= 0 && currentIndex === lastGenerationChatIndex) return;
     lastGenerationChatIndex = currentIndex;
 
     // Get the last user message for contextual queries
@@ -488,42 +474,28 @@ async function onGeneration() {
  * MESSAGE_SENT — Store user message in Honcho.
  */
 async function onMessageSent(messageIndex) {
-    if (!isReady()) {
-        console.log('[Honcho] onMessageSent: not ready, skipping');
-        return;
-    }
+    if (!isReady()) return;
 
     const honchoMeta = chat_metadata?.honcho;
-    if (!honchoMeta?.sessionId) {
-        console.log('[Honcho] onMessageSent: no session in metadata, skipping');
-        return;
-    }
+    if (!honchoMeta?.sessionId) return;
 
     const message = chat[messageIndex];
     if (!message || !message.is_user) return;
 
-    console.log(`[Honcho] Storing user message (index ${messageIndex})`);
-    const result = await honchoFetch('/session/messages', {
+    await honchoFetch('/session/messages', {
         sessionId: honchoMeta.sessionId,
         messages: [{ peerId: honchoMeta.userPeerId, content: message.mes }],
     });
-    console.log('[Honcho] User message store result:', result);
 }
 
 /**
  * CHARACTER_MESSAGE_RENDERED — Store AI response in Honcho.
  */
 async function onCharResponse(messageIndex) {
-    if (!isReady()) {
-        console.log('[Honcho] onCharResponse: not ready, skipping');
-        return;
-    }
+    if (!isReady()) return;
 
     const honchoMeta = chat_metadata?.honcho;
-    if (!honchoMeta?.sessionId) {
-        console.log('[Honcho] onCharResponse: no session in metadata, skipping');
-        return;
-    }
+    if (!honchoMeta?.sessionId) return;
 
     const message = chat[messageIndex];
     if (!message || message.is_user || message.is_system) return;
@@ -531,12 +503,10 @@ async function onCharResponse(messageIndex) {
     // Skip swiped-away messages (only store if this is the latest message)
     if (messageIndex !== chat.length - 1) return;
 
-    console.log(`[Honcho] Storing char message (index ${messageIndex})`);
-    const result = await honchoFetch('/session/messages', {
+    await honchoFetch('/session/messages', {
         sessionId: honchoMeta.sessionId,
         messages: [{ peerId: honchoMeta.charPeerId, content: message.mes }],
     });
-    console.log('[Honcho] Char message store result:', result);
 }
 
 // ─── Tool Registration ────────────────────────────────────
@@ -786,7 +756,6 @@ function bindSettingsListeners() {
                 headers: getRequestHeaders(),
                 body: JSON.stringify({ sessionId: newName }),
             });
-            console.log(`[Honcho] Session renamed to: ${newName}`);
         } catch (err) {
             console.error('[Honcho] Session rename error:', err);
         }
@@ -884,7 +853,6 @@ jQuery(async () => {
                 // Sync ST persona name with Honcho peerName (only if still at default)
                 if (globalConfig.peerName && (!name1 || name1 === 'User')) {
                     setUserName(globalConfig.peerName, { toastPersonaNameChange: false });
-                    console.log(`[Honcho] Synced persona name to peerName: ${globalConfig.peerName}`);
                 }
 
                 if (changed) {
@@ -892,8 +860,8 @@ jQuery(async () => {
                 }
             }
         }
-    } catch (err) {
-        console.log('[Honcho] Could not fetch global config:', err.message);
+    } catch {
+        // Global config not available — not an error
     }
 
     // Render settings panel

@@ -6,8 +6,14 @@ Persistent, personalized memory for SillyTavern AI characters via [Honcho](https
 
 From your SillyTavern directory:
 
+**macOS / Linux:**
 ```bash
 bash <(curl -s https://raw.githubusercontent.com/plastic-labs/sillytavern-honcho/main/install.sh)
+```
+
+**Windows (PowerShell):**
+```powershell
+irm https://raw.githubusercontent.com/plastic-labs/sillytavern-honcho/main/install.ps1 | iex
 ```
 
 Then restart SillyTavern.
@@ -108,7 +114,8 @@ sillytavern-honcho/
 +-- index.js               Client extension
 +-- settings.html          Settings panel
 +-- style.css              Styles
-+-- install.sh             One-step installer
++-- install.sh             Installer (macOS/Linux)
++-- install.ps1            Installer (Windows)
 +-- plugin/
 |   +-- index.js           Server plugin (7 routes)
 |   +-- package.json       @honcho-ai/sdk dependency
