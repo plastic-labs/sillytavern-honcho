@@ -94,7 +94,7 @@ Every generation injects the peer representation and session summary from `sessi
 
 ## Architecture
 
-```
+```text
 Browser (Extension)                     Server (Plugin)
 +-----------------------+               +------------------------------+
 | index.js              |  fetch()      | plugin/index.js              |
@@ -108,7 +108,7 @@ Browser (Extension)                     Server (Plugin)
 
 ## File structure
 
-```
+```text
 sillytavern-honcho/
 +-- manifest.json          Extension manifest
 +-- index.js               Client extension

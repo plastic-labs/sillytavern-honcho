@@ -45,6 +45,7 @@ const defaultSettings = {
 };
 
 let sessionSetupInProgress = false;
+let pendingChatId = null;
 let lastGenerationChatIndex = -1;
 let turnsSinceLastReasoning = Infinity; // Infinity ensures first turn always fires
 
@@ -131,9 +132,10 @@ function getCharPeerId() {
  * Make a request to the Honcho plugin proxy (no timeout, raw fetch).
  * @param {string} endpoint
  * @param {object} body
+ * @param {AbortSignal|null} [signal]
  * @returns {Promise<object|null>}
  */
-async function honchoFetchRaw(endpoint, body) {
+async function honchoFetchRaw(endpoint, body, signal = null) {
     try {
         const response = await fetch(`${PLUGIN_BASE}${endpoint}`, {
             method: 'POST',
@@ -142,6 +144,7 @@ async function honchoFetchRaw(endpoint, body) {
                 workspaceId: settings().workspaceId,
                 ...body,
             }),
+            signal,
         });
 
         if (!response.ok) {
@@ -178,22 +181,26 @@ async function honchoFetch(endpoint, body, timeoutMs = 30000, cacheKey = null) {
         return cached;
     }
 
-    const fetchPromise = honchoFetchRaw(endpoint, body);
-
     if (!cacheKey) {
-        // No caching, just use a hard timeout
+        // Hard abort for write endpoints — cancelled requests don't overwrite current state
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), timeoutMs);
         try {
-            const result = await Promise.race([
-                fetchPromise,
-                new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), timeoutMs)),
-            ]);
-            return result;
-        } catch {
+            return await honchoFetchRaw(endpoint, body, controller.signal);
+        } catch (err) {
+            if (err.name !== 'AbortError') {
+                console.warn(`[Honcho] ${endpoint} error:`, err.message);
+            } else {
+                console.warn(`[Honcho] ${endpoint} timed out after ${timeoutMs}ms`);
+            }
             return null;
+        } finally {
+            clearTimeout(timer);
         }
     }
 
-    // Soft timeout with background caching
+    // Soft timeout with background caching (read endpoints)
+    const fetchPromise = honchoFetchRaw(endpoint, body);
     try {
         const result = await Promise.race([
             fetchPromise,
@@ -259,14 +266,18 @@ async function onChatChanged() {
         // auto: "charName-YYYY-MM-DD-hash" (one session per ST chat)
         const dateMatch = rawChatId.match(/(\d{4}-\d{2}-\d{2})/);
         const dateStr = dateMatch ? dateMatch[1] : new Date().toISOString().slice(0, 10);
-        const shortHash = Array.from(rawChatId)
-            .reduce((h, c) => ((h << 5) - h + c.charCodeAt(0)) | 0, 0)
-            .toString(36).replace('-', '');
+        const shortHash = Math.abs(
+            Array.from(rawChatId).reduce((h, c) => ((h << 5) - h + c.charCodeAt(0)) | 0, 0)
+        ).toString(36);
         chatId = sanitizeId(`${charName}-${dateStr}-${shortHash}`);
     }
 
-    // Prevent race if CHAT_CHANGED fires multiple times
-    if (sessionSetupInProgress) return;
+    // Prevent race if CHAT_CHANGED fires while a setup is already running.
+    // Queue one rerun so the last chat switch always gets processed.
+    if (sessionSetupInProgress) {
+        pendingChatId = rawChatId;
+        return;
+    }
     sessionSetupInProgress = true;
 
     try {
@@ -314,6 +325,11 @@ async function onChatChanged() {
         console.error('[Honcho] onChatChanged error:', err);
     } finally {
         sessionSetupInProgress = false;
+        // If a chat change arrived while this setup was running, process it now
+        if (pendingChatId) {
+            pendingChatId = null;
+            onChatChanged();
+        }
     }
 }
 

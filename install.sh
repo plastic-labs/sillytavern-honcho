@@ -17,7 +17,7 @@ EXT_DIR="$ST_DIR/public/scripts/extensions/third-party/sillytavern-honcho"
 PLUGIN_DIR="$ST_DIR/plugins/honcho-proxy"
 
 # Verify we're in a SillyTavern directory
-if [[ ! -f "$ST_DIR/server.js" ]] && [[ ! -f "$ST_DIR/package.json" ]]; then
+if [[ ! -f "$ST_DIR/server.js" ]] || [[ ! -f "$ST_DIR/package.json" ]]; then
     echo "[!] Could not find SillyTavern at: $ST_DIR"
     echo "    Run this script from your SillyTavern directory, or set ST_DIR:"
     echo "    ST_DIR=/path/to/SillyTavern bash install.sh"

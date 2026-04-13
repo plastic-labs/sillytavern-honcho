@@ -184,11 +184,14 @@ function honchoMiddleware(req, res, next) {
  * @param {import('express').Router} router
  */
 export async function init(router) {
-    // Load global config
+    // Load global config, seeding a minimal default if the file doesn't exist yet
     globalConfig = loadGlobalConfig();
-
-    // Register SillyTavern as a host on startup (empty scaffold if not present)
-    if (globalConfig) {
+    if (!globalConfig) {
+        globalConfig = { hosts: { sillytavern: {} } };
+        saveGlobalConfig();
+        console.log(`[honcho-proxy] Created default global config at ${GLOBAL_CONFIG_PATH}`);
+    } else {
+        // Register SillyTavern as a host if not present
         const stHost = globalConfig.hosts?.sillytavern;
         if (!stHost) {
             updateSTHost({});
