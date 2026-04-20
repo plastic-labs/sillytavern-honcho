@@ -568,7 +568,10 @@ function registerHonchoTools() {
         },
         formatMessage: () => 'Querying Honcho memory...',
         shouldRegister,
-        stealth: true,
+        // Read tools are NOT stealth: ST's stealth handler (tool-calling.js:823-827)
+        // discards tool results before the follow-up generate, so the LLM would never
+        // see the retrieved memory. Query results must reach the model to shape the reply.
+        stealth: false,
     });
 
     // Save observation — write a conclusion about the user to persistent memory
@@ -642,7 +645,8 @@ function registerHonchoTools() {
         },
         formatMessage: () => 'Searching conversation history...',
         shouldRegister,
-        stealth: true,
+        // See honcho_query_memory above — search results must reach the LLM, so not stealth.
+        stealth: false,
     });
 }
 
