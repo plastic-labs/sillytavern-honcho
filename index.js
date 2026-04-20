@@ -23,6 +23,7 @@ import {
 } from '../../../extensions.js';
 import { SECRET_KEYS, secret_state } from '../../../secrets.js';
 import { selected_group } from '../../../group-chats.js';
+import { oai_settings } from '../../../openai.js';
 
 const MODULE_NAME = 'honcho';
 const PLUGIN_BASE = '/api/plugins/honcho-proxy';
@@ -677,6 +678,21 @@ function updateActiveSessionDisplay() {
     $('#honcho_active_session').val(meta?.sessionId || '');
 }
 
+/**
+ * Sync SillyTavern's function_calling flag to match the current Tool Call
+ * enrichment mode. Without this, ToolManager registers tools but ST's
+ * chat-completion request omits the `tools` key entirely.
+ *
+ * Called from both the mode-change listener and at extension load so the flag
+ * stays in lockstep with contextMode. NOTE: this mutates a global ST setting
+ * — every tool-registering extension sees the change.
+ */
+function syncFunctionCallingFlag() {
+    if (oai_settings && 'function_calling' in oai_settings) {
+        oai_settings.function_calling = (settings().contextMode === 'tool_call');
+    }
+}
+
 function loadSettingsUI() {
     const s = settings();
     $('#honcho_enabled').prop('checked', s.enabled);
@@ -685,6 +701,7 @@ function loadSettingsUI() {
     $(`input[name="honcho_session_naming"][value="${s.sessionNaming || 'auto'}"]`).prop('checked', true);
     $('#honcho_custom_session').val(s.customSessionName || '');
     $(`input[name="honcho_context_mode"][value="${s.contextMode}"]`).prop('checked', true);
+    syncFunctionCallingFlag();  // fire at init so saved tool_call mode takes effect without requiring a toggle
     $('#honcho_prefetch_queries').val((s.prefetchQueries || []).join('\n'));
     $('#honcho_prefetch_interval').val(s.prefetchInterval || 8);
     $(`input[name="honcho_injection_position"][value="${s.injectionPosition}"]`).prop('checked', true);
@@ -780,6 +797,7 @@ function bindSettingsListeners() {
 
     $('input[name="honcho_context_mode"]').on('change', function () {
         settings().contextMode = $(this).val();
+        syncFunctionCallingFlag();  // symmetric — also clears the flag when user switches AWAY from tool_call
         saveSettingsDebounced();
         updateConditionalSections();
     });
