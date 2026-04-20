@@ -365,9 +365,9 @@ export async function init(router) {
     // POST /context — Get session context for LLM prompt injection
     router.post('/context', async (req, res) => {
         try {
-            const { sessionId, userPeerId, tokens, summary } = req.body;
-            if (!sessionId || !userPeerId) {
-                return res.status(400).json({ error: 'sessionId and userPeerId are required' });
+            const { sessionId, userPeerId, charPeerId, tokens, summary } = req.body;
+            if (!sessionId || !userPeerId || !charPeerId) {
+                return res.status(400).json({ error: 'sessionId, userPeerId, and charPeerId are required' });
             }
 
             const client = await getClient(req.honchoApiKey, req.honchoWorkspaceId);
@@ -380,7 +380,10 @@ export async function init(router) {
             if (typeof summary === 'boolean') {
                 opts.summary = summary;
             }
+            // SDK requires the pair: peerPerspective (observer) + peerTarget (subject).
+            // The SDK rejects client-side if either is missing when the other is provided.
             opts.peerPerspective = userPeerId;
+            opts.peerTarget = charPeerId;
 
             const context = await session.context(opts);
 

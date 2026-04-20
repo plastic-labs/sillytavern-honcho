@@ -395,6 +395,7 @@ async function onGeneration() {
         const contextBody = {
             sessionId: honchoMeta.sessionId,
             userPeerId: honchoMeta.userPeerId,
+            charPeerId: honchoMeta.charPeerId,
             tokens: settings().contextTokens,
             summary: settings().contextSummary,
         };
