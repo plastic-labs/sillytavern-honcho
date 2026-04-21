@@ -36,25 +36,27 @@ The repo's README should document option 1 as the supported path.
 Run these checks in parallel. If any fails, stop and report — do not proceed.
 
 ```bash
-node --version                               # require >= 18
-git --version                                # required
+PORT="${ST_PORT:-8000}"
+node --version                                # require >= 18
+git --version                                 # required
 [[ -d "$ST_DIR" ]] && git -C "$ST_DIR" status --short   # expect clean tree
 [[ -d "$SH_DIR" ]] && git -C "$SH_DIR" branch --show-current  # capture branch for logs
-lsof -i :8000 -P 2>/dev/null | grep LISTEN   # detect pre-existing SillyTavern
+lsof -i ":$PORT" -P 2>/dev/null | grep LISTEN   # detect pre-existing SillyTavern on target port
 [[ -f ~/.honcho/config.json ]] && echo "global config present"
 ```
 
 Where:
 - `$ST_DIR` = SillyTavern checkout. Ask the user if not set.
 - `$SH_DIR` = `sillytavern-honcho` checkout. Ask the user if not set.
+- `$ST_PORT` = SillyTavern's listen port. Defaults to 8000. Override (e.g. `ST_PORT=8099`) to run alongside an existing SillyTavern on 8000 without collision.
 
-### Gate: pre-existing SillyTavern on port 8000
+### Gate: pre-existing SillyTavern on the target port
 
-If port 8000 is already listening, ask the user before proceeding. Running this skill will start a new server on the same port and can clobber their live session.
+If `$PORT` is already listening, ask the user before proceeding. Running this skill will start a new server on the same port and can clobber their live session.
 
-Use **AskUserQuestion**: "A SillyTavern instance is already running on port 8000 (PID `<pid>`). I'll need to stop it to complete this install. Stop it? [yes / no — I'll pick a different port]".
+Use **AskUserQuestion**: "A SillyTavern instance is already running on port `$PORT` (PID `<pid>`). I'll need to stop it to complete this install. Stop it? [yes / no — I'll pick a different port]".
 
-If the user picks a different port, export `ST_PORT=8099` and add `--port $ST_PORT` to every subsequent `npm start` / `node server.js` call.
+If the user picks a different port, re-run with `ST_PORT=<new-port>` exported — every `npm start` / `node server.js` / `curl` call below already honors `$ST_PORT`.
 
 ### Gate: existing vs cold-start user
 
@@ -80,7 +82,8 @@ Expect `npm warn` lines and a vulnerability count. Skill does not fix these; the
 `config.yaml` is created by SillyTavern's server on first launch, not by `npm install`. Start the server once to generate it, then stop.
 
 ```bash
-cd "$ST_DIR" && npm start > /tmp/silly-first-launch.log 2>&1 &
+PORT="${ST_PORT:-8000}"
+cd "$ST_DIR" && npm start -- --port "$PORT" > /tmp/silly-first-launch.log 2>&1 &
 ST_PID=$!
 # Wait for config.yaml to appear, up to 30s
 for _ in $(seq 1 30); do [[ -f "$ST_DIR/config.yaml" ]] && break; sleep 1; done
@@ -107,9 +110,11 @@ Why disable auto-update: this install symlinks a local dev checkout of `sillytav
 Verify:
 
 ```bash
-grep -E '^enableServerPlugins(|AutoUpdate):' config.yaml
+grep -E '^enableServerPlugins(AutoUpdate)?:' config.yaml
 # expect: enableServerPlugins: true
 #         enableServerPluginsAutoUpdate: false
+# Note: empty alternation like ^foo(|Bar): fails on BSD grep (macOS default).
+# The (AutoUpdate)? form is portable across both GNU and BSD grep.
 ```
 
 ## Phase 2 — Apply core patches (idempotent)
@@ -191,9 +196,10 @@ fi
 ### 4.1 Start the server
 
 ```bash
+PORT="${ST_PORT:-8000}"
 cd "$ST_DIR"
 rm -f /tmp/silly-server.log
-npm start > /tmp/silly-server.log 2>&1 &
+npm start -- --port "$PORT" > /tmp/silly-server.log 2>&1 &
 ST_PID=$!
 # Wait for "listening" line, up to 30s
 for _ in $(seq 1 30); do grep -q "is listening on" /tmp/silly-server.log && break; sleep 1; done
@@ -270,14 +276,20 @@ Entry happens in the SillyTavern UI (Phase 6, browser step) — this skill does 
 Round-trip a real request through the plugin. Requires the user's Honcho API key.
 
 ```bash
-# Obtain a CSRF token by hitting the root — SillyTavern returns it in a cookie/header
-# pattern, then POST with it. (If SillyTavern's single-user mode skips CSRF, adjust.)
 PORT="${ST_PORT:-8000}"
+
+# Capture the CSRF token. SillyTavern exposes it at GET /csrf-token as JSON:
+# {"token": "..."}. Verified against current staging; skill v1's "hit the root,
+# extract from cookie/header" hand-wave was wrong.
+CSRF_TOKEN=$(curl -s "http://127.0.0.1:$PORT/csrf-token" \
+  | python3 -c 'import sys, json; print(json.load(sys.stdin)["token"])')
+[[ -n "$CSRF_TOKEN" ]] || { echo "CSRF token capture failed — abort"; exit 1; }
+
 # Minimal probe: hit /chat with a known-bad workspace to confirm the SDK initializes
 # without throwing and returns a structured Honcho error (not a crash).
 curl -s -X POST \
   -H "Content-Type: application/json" \
-  -H "X-CSRF-Token: <captured>" \
+  -H "X-CSRF-Token: $CSRF_TOKEN" \
   -d "{\"workspaceId\":\"$HONCHO_WORKSPACE_ID\",\"peerId\":\"smoke-test-peer\",\"query\":\"hello\"}" \
   "http://127.0.0.1:$PORT/api/plugins/honcho-proxy/chat" | tee /tmp/honcho-probe.json
 ```
