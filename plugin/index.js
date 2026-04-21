@@ -151,16 +151,22 @@ function statusFromSdkError(err) {
 
 /**
  * Extract Retry-After from an SDK error, if present. Returns a string
- * suitable for the Retry-After response header (per RFC 7231 — seconds
- * or HTTP-date). SDK may surface it on err.headers or err.retryAfter.
+ * suitable for the Retry-After response header (per RFC 9110 §10.2.3 —
+ * seconds-integer or HTTP-date).
  */
 function retryAfterFromSdkError(err) {
     if (!err) return null;
+    // Forward-defensive: Honcho SDK 2.0.1 doesn't attach .headers to errors,
+    // but a future version may. Pass through raw header value if present.
     if (err.headers && typeof err.headers.get === 'function') {
         const v = err.headers.get('retry-after');
         if (v) return String(v);
     }
-    if (err.retryAfter) return String(err.retryAfter);
+    // Honcho SDK's parseRetryAfter stores err.retryAfter as MILLISECONDS,
+    // not seconds. RFC 9110 requires seconds-integer → divide and ceil.
+    if (typeof err.retryAfter === 'number') {
+        return String(Math.max(1, Math.ceil(err.retryAfter / 1000)));
+    }
     return null;
 }
 
