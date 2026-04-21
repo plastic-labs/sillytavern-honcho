@@ -719,6 +719,7 @@ function loadSettingsUI() {
     if (s.contextMode === 'prefetch') {
         s.contextMode = 'reasoning';
         saveSettingsDebounced();
+        console.log('[Honcho] Migrated contextMode: prefetch → reasoning');
     }
     $('#honcho_enabled').prop('checked', s.enabled);
     $('#honcho_workspace_id').val(s.workspaceId);

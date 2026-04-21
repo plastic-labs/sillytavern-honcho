@@ -211,6 +211,8 @@ function honchoMiddleware(req, res, next) {
         next();
     } catch (err) {
         console.error('[honcho-proxy] Middleware error:', err.message);
+        // Genuine 500 — local secret-read failure, not an SDK/upstream error.
+        // Don't route through statusFromSdkError (no err.status to map).
         return res.status(500).json({ error: 'Failed to read Honcho API key' });
     }
 }
