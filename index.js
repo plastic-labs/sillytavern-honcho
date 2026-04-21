@@ -661,13 +661,21 @@ function registerHonchoTools() {
 
 function updateStatusIndicator() {
     const $status = $('#honcho_status');
+    const hasKey = !!(secret_state[SECRET_KEYS.HONCHO] || globalConfigCache?.hasApiKey);
+
+    // BUG-6 fix: swap API-key placeholder so users get feedback on the input
+    // itself after save, not only in the #honcho_status line below. The input
+    // is SillyTavern's manage-api-keys pattern (maxlength=0, readonly), so we
+    // can't set a value — but the placeholder IS the visible text.
+    $('#honcho_api_key').attr('placeholder', hasKey ? 'Key set — click to change' : 'Click to set key');
+
     if (isReady()) {
         $status.text('Ready').removeClass('not-ready').addClass('ready');
     } else {
         const reasons = [];
         if (!settings()?.enabled) reasons.push('disabled');
         if (!settings()?.workspaceId) reasons.push('no workspace ID');
-        if (!secret_state[SECRET_KEYS.HONCHO] && !globalConfigCache?.hasApiKey) reasons.push('no API key');
+        if (!hasKey) reasons.push('no API key');
         $status.text(`Not ready: ${reasons.join(', ')}`).removeClass('ready').addClass('not-ready');
     }
 }
