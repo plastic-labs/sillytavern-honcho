@@ -1,7 +1,7 @@
 ---
 name: sillytavern-honcho-setup
 description: Install the Honcho Memory extension + plugin into a SillyTavern checkout. Use when installing, re-installing, or troubleshooting the integration — including on a fresh SillyTavern checkout. Safe to re-run; every patch step is idempotent.
-allowed-tools: Read, Glob, Grep, Bash(npm:*), Bash(node:*), Bash(ln:*), Bash(ls:*), Bash(cd:*), Bash(cat:*), Bash(mkdir:*), Bash(cp:*), Bash(rm:*), Bash(git:*), Bash(curl:*), Bash(lsof:*), Bash(pgrep:*), Bash(pkill:*), Bash(kill:*), Bash(sleep:*), Edit, Write, AskUserQuestion
+allowed-tools: Read, Glob, Grep, Bash(npm:*), Bash(node:*), Bash(ln:*), Bash(ls:*), Bash(cd:*), Bash(cat:*), Bash(mkdir:*), Bash(cp:*), Bash(rm:*), Bash(git:*), Bash(curl:*), Bash(lsof:*), Bash(pgrep:*), Bash(kill:*), Bash(sleep:*), Edit, Write, AskUserQuestion
 user-invocable: true
 ---
 
@@ -83,14 +83,16 @@ Expect `npm warn` lines and a vulnerability count. Skill does not fix these; the
 
 ```bash
 PORT="${ST_PORT:-8000}"
-cd "$ST_DIR" && npm start -- --port "$PORT" > /tmp/silly-first-launch.log 2>&1 &
+BOOT_LOG=$(mktemp -t silly-first-launch.XXXXXX.log)
+# exec npm so $! captures the node process directly (not the subshell),
+# making `kill "$ST_PID"` reach node without the broad `pkill -f
+# "node.*server.js"` footgun that would nuke unrelated ST instances.
+( cd "$ST_DIR" && exec npm start -- --port "$PORT" > "$BOOT_LOG" 2>&1 ) &
 ST_PID=$!
-# Wait for config.yaml to appear, up to 30s
-for _ in $(seq 1 30); do [[ -f "$ST_DIR/config.yaml" ]] && break; sleep 1; done
-kill "$ST_PID" 2>/dev/null
-sleep 2
-pkill -f "node.*server.js" 2>/dev/null || true
-[[ -f "$ST_DIR/config.yaml" ]] || { echo "config.yaml did not appear — abort"; exit 1; }
+# Wait for config.yaml to appear, up to 90s (tight on slow hardware)
+for _ in $(seq 1 90); do [[ -f "$ST_DIR/config.yaml" ]] && break; sleep 1; done
+{ kill "$ST_PID" 2>/dev/null; wait "$ST_PID" 2>/dev/null; } || true
+[[ -f "$ST_DIR/config.yaml" ]] || { echo "config.yaml did not appear — inspect $BOOT_LOG"; exit 1; }
 ```
 
 ### 1.3 Enable server plugins; disable auto-update
@@ -99,10 +101,16 @@ Two edits in `config.yaml`. Both are idempotent (precheck before editing).
 
 ```bash
 cd "$ST_DIR"
-grep -q '^enableServerPlugins: true'             config.yaml || \
-  sed -i '' 's/^enableServerPlugins: false/enableServerPlugins: true/' config.yaml
-grep -q '^enableServerPluginsAutoUpdate: false'  config.yaml || \
-  sed -i '' 's/^enableServerPluginsAutoUpdate: true/enableServerPluginsAutoUpdate: false/' config.yaml
+# sed -i.bak + rm is the portable form; `sed -i ''` is BSD-only and
+# breaks on GNU sed (Linux). The .bak suffix is accepted by both.
+grep -q '^enableServerPlugins: true'             config.yaml || {
+  sed -i.bak 's/^enableServerPlugins: false/enableServerPlugins: true/' config.yaml
+  rm -f config.yaml.bak
+}
+grep -q '^enableServerPluginsAutoUpdate: false'  config.yaml || {
+  sed -i.bak 's/^enableServerPluginsAutoUpdate: true/enableServerPluginsAutoUpdate: false/' config.yaml
+  rm -f config.yaml.bak
+}
 ```
 
 Why disable auto-update: this install symlinks a local dev checkout of `sillytavern-honcho`. If auto-update is on, SillyTavern tries to `git pull` that checkout on every boot, which surprises anyone actively editing the repo. Re-enable after shipping.
@@ -246,17 +254,31 @@ echo "plugin route mounted (HTTP $code — expected 400/403/500 without CSRF+key
 The plugin reads `~/.honcho/config.json` at startup. Confirm the keys it actually uses are resolvable:
 
 ```bash
-python3 -c '
+# python3 is preferred over jq because it's a hard dep on macOS + most
+# Linux dev envs. If it's still missing (minimal Alpine / Debian-slim),
+# skip the probe and fall through to Branch B rather than crashing.
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "python3 not available — skipping apiKey probe; treat as cold-start" >&2
+    # Branch B
+else
+    # Config path passed via argv (not heredoc interpolation) so a
+    # pathological path can't inject Python code.
+    python3 - "$HOME/.honcho/config.json" <<'PY' 2>/dev/null
 import json, sys
-d = json.load(open(open("/dev/stdin").name))
-h = d.get("hosts", {}).get("sillytavern", {})
-ok = bool(h.get("apiKey") or d.get("apiKey"))
-print("resolvable" if ok else "EMPTY — treat as cold-start", file=sys.stderr)
-sys.exit(0 if ok else 1)
-' < ~/.honcho/config.json
+try:
+    d = json.load(open(sys.argv[1]))
+    h = d.get("hosts", {}).get("sillytavern", {})
+    ok = bool(h.get("apiKey") or d.get("apiKey"))
+    print("resolvable" if ok else "EMPTY — treat as cold-start", file=sys.stderr)
+    sys.exit(0 if ok else 1)
+except Exception:
+    print("EMPTY — treat as cold-start", file=sys.stderr)
+    sys.exit(1)
+PY
+fi
 ```
 
-If the check prints `EMPTY — treat as cold-start`, jump to Branch B. "Auto-populated" is a false promise when `hosts.sillytavern = {}` with no root-level fallback.
+If the check prints `EMPTY — treat as cold-start` (or `python3 not available`), jump to Branch B. "Auto-populated" is a false promise when `hosts.sillytavern = {}` with no root-level fallback.
 
 If resolvable, no further config action — the plugin will read the keys on startup. Verify with a real API call in Phase 6.
 
@@ -283,8 +305,15 @@ JAR=$(mktemp)
 # ({"token": "..."}), and binds that token to a `session-*` cookie. The POST
 # below MUST reuse the same cookie jar or CSRF middleware returns an HTML
 # ForbiddenError before the honcho-proxy handler runs.
-CSRF_TOKEN=$(curl -s -c "$JAR" "http://127.0.0.1:$PORT/csrf-token" \
-  | python3 -c 'import sys, json; print(json.load(sys.stdin)["token"])')
+# Token extraction tolerates python3 absence by falling back to node, which
+# is already a hard dep for this skill (SillyTavern requires it).
+if command -v python3 >/dev/null 2>&1; then
+    CSRF_TOKEN=$(curl -s -c "$JAR" "http://127.0.0.1:$PORT/csrf-token" \
+      | python3 -c 'import sys, json; print(json.load(sys.stdin)["token"])')
+else
+    CSRF_TOKEN=$(curl -s -c "$JAR" "http://127.0.0.1:$PORT/csrf-token" \
+      | node -e 'let b=""; process.stdin.on("data",d=>b+=d).on("end",()=>process.stdout.write(JSON.parse(b).token))')
+fi
 [[ -n "$CSRF_TOKEN" ]] || { echo "CSRF token capture failed — abort"; rm -f "$JAR"; exit 1; }
 
 # Minimal probe: hit /chat with a known-bad workspace to confirm the SDK
@@ -333,14 +362,17 @@ cd "$ST_DIR"
 rm -f plugins/honcho-proxy
 rm -f public/scripts/extensions/third-party/sillytavern-honcho
 
-# Revert the two edits (idempotent — grep-guarded)
-sed -i '' "/HONCHO: 'api_key_honcho',/d"              src/endpoints/secrets.js
-sed -i '' "/HONCHO: 'api_key_honcho',/d"              public/scripts/secrets.js
-sed -i '' "/\[SECRET_KEYS.HONCHO\]: 'Honcho AI',/d"   public/scripts/secrets.js
+# Revert the two edits (idempotent — grep-guarded). Uses sed -i.bak + rm
+# for BSD/GNU portability (plain `sed -i ''` is BSD-only).
+sed -i.bak "/HONCHO: 'api_key_honcho',/d"              src/endpoints/secrets.js  && rm -f src/endpoints/secrets.js.bak
+sed -i.bak "/HONCHO: 'api_key_honcho',/d"              public/scripts/secrets.js && rm -f public/scripts/secrets.js.bak
+sed -i.bak "/\[SECRET_KEYS.HONCHO\]: 'Honcho AI',/d"   public/scripts/secrets.js && rm -f public/scripts/secrets.js.bak
 
 # Optional: revert config.yaml changes
-grep -q '^enableServerPlugins: false' config.yaml || \
-  sed -i '' 's/^enableServerPlugins: true/enableServerPlugins: false/' config.yaml
+grep -q '^enableServerPlugins: false' config.yaml || {
+  sed -i.bak 's/^enableServerPlugins: true/enableServerPlugins: false/' config.yaml
+  rm -f config.yaml.bak
+}
 ```
 
 ## Anti-patterns (things this skill tends to get wrong)
@@ -355,6 +387,9 @@ grep -q '^enableServerPlugins: false' config.yaml || \
 | Skip Phase 6.1 because "the plugin loaded" | A loaded plugin can still fail to reach Honcho. The round-trip is the real stop condition. |
 | Treat `~/.honcho/config.json` existence as "configured" | The plugin needs resolvable keys. Probe them; don't just stat the file. |
 | Leave `enableServerPluginsAutoUpdate: true` on a dev install | Surprises anyone actively editing the symlinked repo. Set `false` during dev; flip back for release. |
+| Use `sed -i ''` for in-place edits | BSD-only. Breaks on GNU sed (Linux). Use `sed -i.bak '...' FILE && rm -f FILE.bak` — portable across both. |
+| `pkill -f "node.*server.js"` as a cleanup fallback | Nukes any unrelated Node server matching the pattern. Use `exec npm start` in the background, track `$ST_PID`, and `{ kill "$PID"; wait "$PID"; } \|\| true` for a clean reap. |
+| Call `python3` without preflight | Crashes under `set -e` on minimal Alpine / distroless. Gate with `command -v python3` and fall through (to node, or to a honest "skipping probe" message). |
 
 ## Handoff
 
