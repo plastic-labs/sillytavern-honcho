@@ -175,6 +175,26 @@ function retryAfterFromSdkError(err) {
 }
 
 /**
+ * Send an SDK error as a structured HTTP response. Centralizes status mapping,
+ * Retry-After surfacing, and error logging so every SDK-facing route catch
+ * behaves identically. Middleware and non-SDK catches (saveGlobalConfig,
+ * secret-read) intentionally don't route through this helper.
+ * @param {import('express').Response} res
+ * @param {unknown} err
+ * @param {string} route - Route path for the log line (e.g. 'peer', 'session/messages')
+ */
+function sendError(res, err, route) {
+    console.error(`[honcho-proxy] POST /${route} error:`, err.message);
+    const status = statusFromSdkError(err);
+    const retryAfter = retryAfterFromSdkError(err);
+    if (retryAfter) res.setHeader('Retry-After', retryAfter);
+    return res.status(status).json({
+        error: err.message,
+        ...(retryAfter ? { retryAfter } : {}),
+    });
+}
+
+/**
  * Middleware to read Honcho API key from secrets (with global config fallback)
  * and validate request body.
  */
@@ -309,14 +329,7 @@ export async function init(router) {
             const peer = await client.peer(peerId, opts);
             return res.json({ id: peer.id, workspaceId: peer.workspaceId });
         } catch (err) {
-            console.error('[honcho-proxy] POST /peer error:', err.message);
-            const status = statusFromSdkError(err);
-            const retryAfter = retryAfterFromSdkError(err);
-            if (retryAfter) res.setHeader('Retry-After', retryAfter);
-            return res.status(status).json({
-                error: err.message,
-                ...(retryAfter ? { retryAfter } : {}),
-            });
+            return sendError(res, err, 'peer');
         }
     });
 
@@ -345,14 +358,7 @@ export async function init(router) {
 
             return res.json({ id: session.id, workspaceId: session.workspaceId });
         } catch (err) {
-            console.error('[honcho-proxy] POST /session error:', err.message);
-            const status = statusFromSdkError(err);
-            const retryAfter = retryAfterFromSdkError(err);
-            if (retryAfter) res.setHeader('Retry-After', retryAfter);
-            return res.status(status).json({
-                error: err.message,
-                ...(retryAfter ? { retryAfter } : {}),
-            });
+            return sendError(res, err, 'session');
         }
     });
 
@@ -382,14 +388,7 @@ export async function init(router) {
             const stored = await session.addMessages(messageInputs);
             return res.json({ count: stored.length });
         } catch (err) {
-            console.error('[honcho-proxy] POST /session/messages error:', err.message);
-            const status = statusFromSdkError(err);
-            const retryAfter = retryAfterFromSdkError(err);
-            if (retryAfter) res.setHeader('Retry-After', retryAfter);
-            return res.status(status).json({
-                error: err.message,
-                ...(retryAfter ? { retryAfter } : {}),
-            });
+            return sendError(res, err, 'session/messages');
         }
     });
 
@@ -412,14 +411,7 @@ export async function init(router) {
             const response = await peer.chat(query, opts);
             return res.json({ response: response || '' });
         } catch (err) {
-            console.error('[honcho-proxy] POST /chat error:', err.message);
-            const status = statusFromSdkError(err);
-            const retryAfter = retryAfterFromSdkError(err);
-            if (retryAfter) res.setHeader('Retry-After', retryAfter);
-            return res.status(status).json({
-                error: err.message,
-                ...(retryAfter ? { retryAfter } : {}),
-            });
+            return sendError(res, err, 'chat');
         }
     });
 
@@ -459,14 +451,7 @@ export async function init(router) {
             const contextText = parts.join('\n\n') || null;
             return res.json({ context: contextText });
         } catch (err) {
-            console.error('[honcho-proxy] POST /context error:', err.message);
-            const status = statusFromSdkError(err);
-            const retryAfter = retryAfterFromSdkError(err);
-            if (retryAfter) res.setHeader('Retry-After', retryAfter);
-            return res.status(status).json({
-                error: err.message,
-                ...(retryAfter ? { retryAfter } : {}),
-            });
+            return sendError(res, err, 'context');
         }
     });
 
@@ -484,14 +469,7 @@ export async function init(router) {
             const conclusion = Array.isArray(results) ? results[0] : results;
             return res.json({ id: conclusion.id, content: conclusion.content });
         } catch (err) {
-            console.error('[honcho-proxy] POST /conclusion error:', err.message);
-            const status = statusFromSdkError(err);
-            const retryAfter = retryAfterFromSdkError(err);
-            if (retryAfter) res.setHeader('Retry-After', retryAfter);
-            return res.status(status).json({
-                error: err.message,
-                ...(retryAfter ? { retryAfter } : {}),
-            });
+            return sendError(res, err, 'conclusion');
         }
     });
 
@@ -508,14 +486,7 @@ export async function init(router) {
             const results = await session.search(query, { limit: limit || 10 });
             return res.json({ results });
         } catch (err) {
-            console.error('[honcho-proxy] POST /search error:', err.message);
-            const status = statusFromSdkError(err);
-            const retryAfter = retryAfterFromSdkError(err);
-            if (retryAfter) res.setHeader('Retry-After', retryAfter);
-            return res.status(status).json({
-                error: err.message,
-                ...(retryAfter ? { retryAfter } : {}),
-            });
+            return sendError(res, err, 'search');
         }
     });
 
