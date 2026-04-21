@@ -1,4 +1,4 @@
-# Developing sillytavern-honcho
+# Contributing to sillytavern-honcho
 
 This file is for developers working on the Honcho memory integration for SillyTavern — not for end users. If you just want to install the extension, see the [integration guide](https://docs.honcho.dev/v3/guides/integrations/sillytavern).
 
