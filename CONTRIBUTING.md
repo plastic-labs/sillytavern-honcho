@@ -8,10 +8,17 @@ This file is for developers working on the Honcho memory integration for SillyTa
 
 The dev-install path below uses symlinks for both the extension and the plugin.
 
+## Prerequisites
+
+- Node.js >= 18
+- A Honcho instance (local or cloud)
+- A Honcho API key from [app.honcho.dev](https://app.honcho.dev)
+- While `sillytavern-honcho` is private, `plastic-labs` GitHub org access to clone (this line will be removed once the repo is public)
+
 ## Dev install
 
 ```bash
-# 1. Clone both repos (while sillytavern-honcho is private, you need org access)
+# 1. Clone both repos
 gh repo clone plastic-labs/sillytavern-honcho
 git clone --branch staging https://github.com/SillyTavern/SillyTavern.git
 
@@ -42,14 +49,6 @@ cd SillyTavern && ./start.sh
 ```
 
 Open `http://localhost:8000`, go to Extensions (puzzle piece icon), expand "Honcho Memory," set your API key + workspace.
-
-> **Note:** while `sillytavern-honcho` is private, you need `plastic-labs` GitHub org access to clone. This note will be removed once the repo is public.
-
-## Prerequisites
-
-- Node.js >= 18
-- A Honcho instance (local or cloud)
-- A Honcho API key from [app.honcho.dev](https://app.honcho.dev)
 
 ## Repo layout
 
@@ -116,6 +115,26 @@ Follows Plastic Labs house style ([Conventional Commits](https://www.conventiona
 - **Title:** `<type>(<scope>): <description>` — types: `feat`, `fix`, `docs`, `chore`. Scope optional.
 - **Branch:** `<firstname>/<slug-or-ticket>` for internal contributors; `<type>/<slug>` for external.
 - **Linear ticket IDs** (`DEV-XXXX`, `AI-XXX`): include in the PR description or commit subjects so Linear auto-links.
+
+## Uninstall (dev install)
+
+Tear down the symlinked install + revert core patches. Run from the parent directory containing both checkouts.
+
+```bash
+# Remove symlinks
+rm -f SillyTavern/public/scripts/extensions/third-party/sillytavern-honcho
+rm -f SillyTavern/plugins/honcho-proxy
+
+# Revert core patches (idempotent — no-op if not applied)
+sed -i '' "/HONCHO: 'api_key_honcho',/d"            SillyTavern/src/endpoints/secrets.js
+sed -i '' "/HONCHO: 'api_key_honcho',/d"            SillyTavern/public/scripts/secrets.js
+sed -i '' "/\[SECRET_KEYS.HONCHO\]: 'Honcho AI',/d" SillyTavern/public/scripts/secrets.js
+
+# Optional: disable server plugins again
+sed -i '' 's/enableServerPlugins: true/enableServerPlugins: false/' SillyTavern/config.yaml
+```
+
+For the agent-automated version with `grep -q` prechecks, see [`skills/setup/SKILL.md`](skills/setup/SKILL.md) under "Uninstall."
 
 ## Questions or stuck?
 
