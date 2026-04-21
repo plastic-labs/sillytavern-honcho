@@ -140,6 +140,16 @@ async function getClient(apiKey, workspaceId) {
 }
 
 /**
+ * Map an SDK/HTTP error to an HTTP status. SDK surfaces err.status when the
+ * underlying call is HTTP-originating (401/403/404/429/etc). Falls back to
+ * 500 when no status is available (local errors, SDK bugs, etc).
+ */
+function statusFromSdkError(err) {
+    if (err && typeof err.status === 'number') return err.status;
+    return 500;
+}
+
+/**
  * Middleware to read Honcho API key from secrets (with global config fallback)
  * and validate request body.
  */
@@ -273,7 +283,7 @@ export async function init(router) {
             return res.json({ id: peer.id, workspaceId: peer.workspaceId });
         } catch (err) {
             console.error('[honcho-proxy] POST /peer error:', err.message);
-            return res.status(500).json({ error: err.message });
+            return res.status(statusFromSdkError(err)).json({ error: err.message });
         }
     });
 
@@ -303,7 +313,7 @@ export async function init(router) {
             return res.json({ id: session.id, workspaceId: session.workspaceId });
         } catch (err) {
             console.error('[honcho-proxy] POST /session error:', err.message);
-            return res.status(500).json({ error: err.message });
+            return res.status(statusFromSdkError(err)).json({ error: err.message });
         }
     });
 
@@ -334,7 +344,7 @@ export async function init(router) {
             return res.json({ count: stored.length });
         } catch (err) {
             console.error('[honcho-proxy] POST /session/messages error:', err.message);
-            return res.status(500).json({ error: err.message });
+            return res.status(statusFromSdkError(err)).json({ error: err.message });
         }
     });
 
@@ -358,7 +368,7 @@ export async function init(router) {
             return res.json({ response: response || '' });
         } catch (err) {
             console.error('[honcho-proxy] POST /chat error:', err.message);
-            return res.status(500).json({ error: err.message });
+            return res.status(statusFromSdkError(err)).json({ error: err.message });
         }
     });
 
@@ -399,7 +409,7 @@ export async function init(router) {
             return res.json({ context: contextText });
         } catch (err) {
             console.error('[honcho-proxy] POST /context error:', err.message);
-            return res.status(500).json({ error: err.message });
+            return res.status(statusFromSdkError(err)).json({ error: err.message });
         }
     });
 
@@ -418,7 +428,7 @@ export async function init(router) {
             return res.json({ id: conclusion.id, content: conclusion.content });
         } catch (err) {
             console.error('[honcho-proxy] POST /conclusion error:', err.message);
-            return res.status(500).json({ error: err.message });
+            return res.status(statusFromSdkError(err)).json({ error: err.message });
         }
     });
 
@@ -436,7 +446,7 @@ export async function init(router) {
             return res.json({ results });
         } catch (err) {
             console.error('[honcho-proxy] POST /search error:', err.message);
-            return res.status(500).json({ error: err.message });
+            return res.status(statusFromSdkError(err)).json({ error: err.message });
         }
     });
 
