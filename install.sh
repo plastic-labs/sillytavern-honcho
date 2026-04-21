@@ -56,17 +56,20 @@ cd "$ST_DIR"
 CONFIG="$ST_DIR/config.yaml"
 if [[ ! -f "$CONFIG" ]]; then
     echo "[*] Generating config.yaml by starting SillyTavern briefly..."
-    ( cd "$ST_DIR" && npm start > /tmp/silly-first-launch.log 2>&1 ) &
+    BOOT_LOG=$(mktemp -t silly-first-launch.XXXXXX.log)
+    # exec npm so $! captures the node process directly (not the subshell),
+    # making `kill "$ST_BOOT_PID"` reach node and avoiding the need for a
+    # broad `pkill -f "node.*server.js"` footgun that would nuke unrelated
+    # SillyTavern instances on the same host.
+    ( cd "$ST_DIR" && exec npm start > "$BOOT_LOG" 2>&1 ) &
     ST_BOOT_PID=$!
-    for _ in $(seq 1 30); do
+    for _ in $(seq 1 60); do
         [[ -f "$CONFIG" ]] && break
         sleep 1
     done
-    kill "$ST_BOOT_PID" 2>/dev/null || true
-    sleep 2
-    pkill -f "node.*server.js" 2>/dev/null || true
+    { kill "$ST_BOOT_PID" 2>/dev/null; wait "$ST_BOOT_PID" 2>/dev/null; } || true
     if [[ ! -f "$CONFIG" ]]; then
-        echo "[!] config.yaml did not appear — inspect /tmp/silly-first-launch.log"
+        echo "[!] config.yaml did not appear — inspect $BOOT_LOG"
         exit 1
     fi
     echo "[*] config.yaml created at $CONFIG"
@@ -94,15 +97,26 @@ if [[ -f "$HONCHO_CONFIG" ]]; then
     # File existence alone isn't enough — a config with hosts.sillytavern={}
     # and no root apiKey will not resolve a key and would make the
     # "auto-populated" message a false promise.
-    if python3 -c "
+    #
+    # python3 is preferred over jq/yq because it's a hard dep of macOS + most
+    # Linux dev envs. If it's still missing (minimal Alpine / Debian-slim),
+    # we fall back to the honest "check it yourself" message instead of
+    # crashing the installer on `set -e`.
+    if ! command -v python3 >/dev/null 2>&1; then
+        echo "[*] Found $HONCHO_CONFIG (python3 not available — skipping apiKey probe)."
+        echo "    Verify a resolvable apiKey is set, or enter one via the Extensions panel."
+    # Path passed via argv (not heredoc interpolation) so a pathological
+    # HONCHO_CONFIG value can't inject Python code.
+    elif python3 - "$HONCHO_CONFIG" <<'PY' 2>/dev/null
 import json, sys
 try:
-    d = json.load(open('$HONCHO_CONFIG'))
+    d = json.load(open(sys.argv[1]))
     h = d.get('hosts', {}).get('sillytavern', {})
     sys.exit(0 if (h.get('apiKey') or d.get('apiKey')) else 1)
 except Exception:
     sys.exit(1)
-" 2>/dev/null; then
+PY
+    then
         echo "[*] Found global Honcho config with resolvable apiKey at $HONCHO_CONFIG"
         echo "    API key, workspace, and peer name will be auto-populated."
     else
