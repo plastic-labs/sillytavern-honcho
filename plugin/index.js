@@ -141,11 +141,15 @@ async function getClient(apiKey, workspaceId) {
 
 /**
  * Map an SDK/HTTP error to an HTTP status. SDK surfaces err.status when the
- * underlying call is HTTP-originating (401/403/404/429/etc). Falls back to
- * 500 when no status is available.
+ * underlying call is HTTP-originating (401/403/404/429/etc). Timeout and
+ * connection errors set err.status = 0 (no HTTP response received) — those
+ * must NOT be passed to res.status() or Express throws RangeError.
  */
 function statusFromSdkError(err) {
-    if (err && typeof err.status === 'number') return err.status;
+    if (!err) return 500;
+    if (err.name === 'TimeoutError') return 504;
+    if (typeof err.status === 'number' && err.status >= 400) return err.status;
+    if (typeof err.status === 'number' && err.status <= 0) return 502;
     return 500;
 }
 
