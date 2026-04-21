@@ -6,7 +6,7 @@ set -euo pipefail
 #
 # Usage:
 #   From inside your SillyTavern directory:
-#     bash <(curl -s https://raw.githubusercontent.com/plastic-labs/sillytavern-honcho/main/install.sh)
+#     bash <(curl -fsSL https://raw.githubusercontent.com/plastic-labs/sillytavern-honcho/main/install.sh)
 #
 #   Or if you've already cloned the repo:
 #     cd SillyTavern && bash path/to/sillytavern-honcho/install.sh
@@ -47,25 +47,83 @@ fi
 # 3. Install SDK dependencies
 echo "[*] Installing @honcho-ai/sdk..."
 cd "$PLUGIN_DIR" && npm install --silent
+cd "$ST_DIR"
 
-# 4. Check config.yaml for server plugins
+# 3.5 Ensure config.yaml exists. SillyTavern creates it on first `npm start`,
+#     not on `npm install`. Without this step, the check below runs against a
+#     missing file (silent on first-run users — BUG-4) and enableServerPlugins
+#     never gets flipped, so the plugin fails to load on first npm start.
 CONFIG="$ST_DIR/config.yaml"
-if [[ -f "$CONFIG" ]]; then
-    if grep -q "enableServerPlugins: true" "$CONFIG"; then
-        echo "[*] Server plugins already enabled in config.yaml"
+if [[ ! -f "$CONFIG" ]]; then
+    echo "[*] Generating config.yaml by starting SillyTavern briefly..."
+    BOOT_LOG=$(mktemp -t silly-first-launch.XXXXXX.log)
+    # exec npm so $! captures the node process directly (not the subshell),
+    # making `kill "$ST_BOOT_PID"` reach node and avoiding the need for a
+    # broad `pkill -f "node.*server.js"` footgun that would nuke unrelated
+    # SillyTavern instances on the same host.
+    ( cd "$ST_DIR" && exec npm start > "$BOOT_LOG" 2>&1 ) &
+    ST_BOOT_PID=$!
+    for _ in $(seq 1 60); do
+        [[ -f "$CONFIG" ]] && break
+        sleep 1
+    done
+    { kill "$ST_BOOT_PID" 2>/dev/null; wait "$ST_BOOT_PID" 2>/dev/null; } || true
+    if [[ ! -f "$CONFIG" ]]; then
+        echo "[!] config.yaml did not appear — inspect $BOOT_LOG"
+        exit 1
+    fi
+    echo "[*] config.yaml created at $CONFIG"
+fi
+
+# 4. Enable server plugins in config.yaml (idempotent)
+if grep -q "^enableServerPlugins: true" "$CONFIG"; then
+    echo "[*] Server plugins already enabled in config.yaml"
+else
+    sed -i.bak 's/^enableServerPlugins: false/enableServerPlugins: true/' "$CONFIG"
+    rm -f "$CONFIG.bak"
+    if grep -q "^enableServerPlugins: true" "$CONFIG"; then
+        echo "[*] Enabled server plugins in config.yaml"
     else
-        echo ""
-        echo "[!] Server plugins are NOT enabled in config.yaml."
-        echo "    Add or change this line in $CONFIG:"
+        echo "[!] Could not set enableServerPlugins: true in $CONFIG"
+        echo "    Add this line manually and restart SillyTavern:"
         echo "      enableServerPlugins: true"
     fi
 fi
 
-# 5. Check for global Honcho config
+# 5. Check for global Honcho config with a resolvable apiKey
 HONCHO_CONFIG="$HOME/.honcho/config.json"
 if [[ -f "$HONCHO_CONFIG" ]]; then
-    echo "[*] Found global Honcho config at $HONCHO_CONFIG"
-    echo "    API key, workspace, and peer name will be auto-populated."
+    # Probe the plugin's fallback chain: hosts.sillytavern.apiKey → root apiKey.
+    # File existence alone isn't enough — a config with hosts.sillytavern={}
+    # and no root apiKey will not resolve a key and would make the
+    # "auto-populated" message a false promise.
+    #
+    # python3 is preferred over jq/yq because it's a hard dep of macOS + most
+    # Linux dev envs. If it's still missing (minimal Alpine / Debian-slim),
+    # we fall back to the honest "check it yourself" message instead of
+    # crashing the installer on `set -e`.
+    if ! command -v python3 >/dev/null 2>&1; then
+        echo "[*] Found $HONCHO_CONFIG (python3 not available — skipping apiKey probe)."
+        echo "    Verify a resolvable apiKey is set, or enter one via the Extensions panel."
+    # Path passed via argv (not heredoc interpolation) so a pathological
+    # HONCHO_CONFIG value can't inject Python code.
+    elif python3 - "$HONCHO_CONFIG" <<'PY' 2>/dev/null
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+    h = d.get('hosts', {}).get('sillytavern', {})
+    sys.exit(0 if (h.get('apiKey') or d.get('apiKey')) else 1)
+except Exception:
+    sys.exit(1)
+PY
+    then
+        echo "[*] Found global Honcho config with resolvable apiKey at $HONCHO_CONFIG"
+        echo "    API key, workspace, and peer name will be auto-populated."
+    else
+        echo "[*] Found $HONCHO_CONFIG but no resolvable apiKey."
+        echo "    (plugin checks hosts.sillytavern.apiKey, then root apiKey.)"
+        echo "    Enter your Honcho API key via the Extensions panel after restart."
+    fi
 else
     echo ""
     echo "[i] No global Honcho config found at $HONCHO_CONFIG"
