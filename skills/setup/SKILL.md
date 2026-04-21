@@ -277,21 +277,26 @@ Round-trip a real request through the plugin. Requires the user's Honcho API key
 
 ```bash
 PORT="${ST_PORT:-8000}"
+JAR=$(mktemp)
 
-# Capture the CSRF token. SillyTavern exposes it at GET /csrf-token as JSON:
-# {"token": "..."}. Verified against current staging; skill v1's "hit the root,
-# extract from cookie/header" hand-wave was wrong.
-CSRF_TOKEN=$(curl -s "http://127.0.0.1:$PORT/csrf-token" \
+# Capture the CSRF token. SillyTavern exposes it at GET /csrf-token as JSON
+# ({"token": "..."}), and binds that token to a `session-*` cookie. The POST
+# below MUST reuse the same cookie jar or CSRF middleware returns an HTML
+# ForbiddenError before the honcho-proxy handler runs.
+CSRF_TOKEN=$(curl -s -c "$JAR" "http://127.0.0.1:$PORT/csrf-token" \
   | python3 -c 'import sys, json; print(json.load(sys.stdin)["token"])')
-[[ -n "$CSRF_TOKEN" ]] || { echo "CSRF token capture failed — abort"; exit 1; }
+[[ -n "$CSRF_TOKEN" ]] || { echo "CSRF token capture failed — abort"; rm -f "$JAR"; exit 1; }
 
-# Minimal probe: hit /chat with a known-bad workspace to confirm the SDK initializes
-# without throwing and returns a structured Honcho error (not a crash).
-curl -s -X POST \
+# Minimal probe: hit /chat with a known-bad workspace to confirm the SDK
+# initializes without throwing and returns a structured Honcho error (not a
+# crash). -b reuses the session cookie from the GET.
+curl -s -b "$JAR" -X POST \
   -H "Content-Type: application/json" \
   -H "X-CSRF-Token: $CSRF_TOKEN" \
   -d "{\"workspaceId\":\"$HONCHO_WORKSPACE_ID\",\"peerId\":\"smoke-test-peer\",\"query\":\"hello\"}" \
   "http://127.0.0.1:$PORT/api/plugins/honcho-proxy/chat" | tee /tmp/honcho-probe.json
+
+rm -f "$JAR"
 ```
 
 Success criteria:
