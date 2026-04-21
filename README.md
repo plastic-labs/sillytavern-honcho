@@ -18,6 +18,8 @@ irm https://raw.githubusercontent.com/plastic-labs/sillytavern-honcho/main/insta
 
 Then restart SillyTavern.
 
+> **Internal reviewers / pre-public:** the URL above 404s while the repo is private. Use the local-clone install path in [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ### What the script does
 
 1. Clones this repo into `public/scripts/extensions/third-party/sillytavern-honcho`
