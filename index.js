@@ -763,9 +763,17 @@ function loadSettingsUI() {
 
 function bindSettingsListeners() {
     $('#honcho_enabled').on('change', function () {
-        settings().enabled = $(this).prop('checked');
+        const wasEnabled = settings().enabled;
+        const nowEnabled = $(this).prop('checked');
+        settings().enabled = nowEnabled;
         saveSettingsDebounced();
         updateStatusIndicator();
+        // Trigger session setup on disabled→enabled transition so tool calls
+        // don't short-circuit with "Honcho session not initialized" on the
+        // current chat. onChatChanged is self-guarded on isReady() + chat id.
+        if (!wasEnabled && nowEnabled) {
+            onChatChanged();
+        }
     });
 
     $('#honcho_workspace_id').on('input', function () {
