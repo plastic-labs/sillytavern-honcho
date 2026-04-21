@@ -6,7 +6,7 @@ set -euo pipefail
 #
 # Usage:
 #   From inside your SillyTavern directory:
-#     bash <(curl -s https://raw.githubusercontent.com/plastic-labs/sillytavern-honcho/main/install.sh)
+#     bash <(curl -fsSL https://raw.githubusercontent.com/plastic-labs/sillytavern-honcho/main/install.sh)
 #
 #   Or if you've already cloned the repo:
 #     cd SillyTavern && bash path/to/sillytavern-honcho/install.sh
