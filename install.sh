@@ -87,11 +87,29 @@ else
     fi
 fi
 
-# 5. Check for global Honcho config
+# 5. Check for global Honcho config with a resolvable apiKey
 HONCHO_CONFIG="$HOME/.honcho/config.json"
 if [[ -f "$HONCHO_CONFIG" ]]; then
-    echo "[*] Found global Honcho config at $HONCHO_CONFIG"
-    echo "    API key, workspace, and peer name will be auto-populated."
+    # Probe the plugin's fallback chain: hosts.sillytavern.apiKey → root apiKey.
+    # File existence alone isn't enough — a config with hosts.sillytavern={}
+    # and no root apiKey will not resolve a key and would make the
+    # "auto-populated" message a false promise.
+    if python3 -c "
+import json, sys
+try:
+    d = json.load(open('$HONCHO_CONFIG'))
+    h = d.get('hosts', {}).get('sillytavern', {})
+    sys.exit(0 if (h.get('apiKey') or d.get('apiKey')) else 1)
+except Exception:
+    sys.exit(1)
+" 2>/dev/null; then
+        echo "[*] Found global Honcho config with resolvable apiKey at $HONCHO_CONFIG"
+        echo "    API key, workspace, and peer name will be auto-populated."
+    else
+        echo "[*] Found $HONCHO_CONFIG but no resolvable apiKey."
+        echo "    (plugin checks hosts.sillytavern.apiKey, then root apiKey.)"
+        echo "    Enter your Honcho API key via the Extensions panel after restart."
+    fi
 else
     echo ""
     echo "[i] No global Honcho config found at $HONCHO_CONFIG"
