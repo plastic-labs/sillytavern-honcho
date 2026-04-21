@@ -8,7 +8,7 @@ From your SillyTavern directory:
 
 **macOS / Linux:**
 ```bash
-bash <(curl -s https://raw.githubusercontent.com/plastic-labs/sillytavern-honcho/main/install.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/plastic-labs/sillytavern-honcho/main/install.sh)
 ```
 
 **Windows (PowerShell):**
@@ -48,7 +48,17 @@ Open Extensions (puzzle piece icon) and expand **Honcho Memory**:
 
 ### Global config (for multi-tool setups)
 
-If you already use Honcho with other tools (Claude Code, Cursor, Hermes), the extension reads from `~/.honcho/config.json` when resolvable keys are present. The plugin checks `hosts.sillytavern.apiKey` first, then falls back to root-level `apiKey`. If neither resolves, enter your key via the Extensions panel.
+`~/.honcho/config.json` is a shared config file that other Honcho integrations (Claude Code, Cursor, Hermes) write when you first set them up. If the file already exists when you install this extension, the server plugin reads it on startup.
+
+**Resolution order** (plugin-side, on startup):
+
+1. `hosts.sillytavern.apiKey` (nested, host-specific)
+2. root-level `apiKey` (flat fallback)
+3. If neither resolves → plugin falls through; you must enter the key via the Extensions panel
+
+**Precedence against the Extensions panel key:** the Extensions-panel key (SillyTavern's secret manager) takes priority at request time — the plugin checks `SECRET_KEYS.HONCHO` first, then falls back to the global-config key. So entering a key in the UI overrides the file without touching it.
+
+Example `~/.honcho/config.json` the plugin accepts:
 
 ```json
 {
@@ -56,6 +66,19 @@ If you already use Honcho with other tools (Claude Code, Cursor, Hermes), the ex
   "peerName": "your-name",
   "workspace": "sillytavern",
   "enabled": true
+}
+```
+
+Nested form (when multiple tools share the file):
+
+```json
+{
+  "hosts": {
+    "sillytavern": {
+      "apiKey": "your-honcho-api-key",
+      "workspace": "sillytavern"
+    }
+  }
 }
 ```
 
@@ -68,7 +91,7 @@ The extension has two parts:
 
 ### Peer observability
 
-By default, only the user peer accumulates derived memory — Honcho observes the user's messages and derives conclusions about them across sessions. The AI character's persona comes from its character card, not from peer derivation. If you want the character to have its own Honcho-derived state, configure it as an additional peer in session setup (see `POST /session` in the plugin routes below).
+By default, only the user peer accumulates derived memory — Honcho observes the user's messages and derives conclusions about them across sessions. The AI character's persona comes from its character card, not from peer derivation. If you want the character to have its own Honcho-derived state, configure it as an additional peer in session setup (see the `/session` route in `plugin/index.js`).
 
 ### Context modes
 
@@ -131,6 +154,13 @@ sillytavern-honcho/
 | --- | --- |
 | No "Honcho Memory" in Extensions | Check symlink: `ls public/scripts/extensions/third-party/sillytavern-honcho/manifest.json` |
 | Plugin not initializing | Add `enableServerPlugins: true` to `config.yaml` and restart |
+| Just installed SillyTavern, plugin silent on first boot | SillyTavern creates `config.yaml` with `enableServerPlugins: false` by default on first launch. Flip it to `true` and restart. |
 | 403 on plugin requests | Set Honcho API key in extension settings or `~/.honcho/config.json` |
 | SDK import error | Run `cd plugins/honcho-proxy && npm install` |
 | Extension loads but nothing happens | Enable the checkbox and ensure workspace ID is set |
+| API key modal saves but status never turns Ready | SillyTavern core patches missing (`SECRET_KEYS.HONCHO` not registered upstream). Either apply the patches (see [CONTRIBUTING.md](CONTRIBUTING.md#core-patches)) or configure via `~/.honcho/config.json`. |
+
+## Development
+
+- For local-clone + symlink dev setup, see [CONTRIBUTING.md](CONTRIBUTING.md).
+- For Claude Code-assisted install, invoke the setup skill at [`skills/setup/SKILL.md`](skills/setup/SKILL.md).
