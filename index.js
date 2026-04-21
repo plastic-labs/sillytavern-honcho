@@ -72,6 +72,20 @@ function sanitizeId(str) {
     return cleaned || 'unnamed';
 }
 
+/** Clear all SWR caches and refresh guards. Call on chat change or whenever
+ *  a setting changes that makes the cached response stale (workspace, peer
+ *  mode, context mode). Without this, edits to those settings are masked by
+ *  the cache until the refresh interval ticks. */
+function resetCaches() {
+    lastGenerationChatIndex = -1;
+    turnsSinceLastReasoning = Infinity;
+    turnsSinceLastContextRefresh = Infinity;
+    cachedContextText = null;
+    contextRefreshInFlight = false;
+    cachedReasoningText = null;
+    reasoningRefreshInFlight = false;
+}
+
 function isReady() {
     const hasApiKey = secret_state[SECRET_KEYS.HONCHO] || globalConfigCache?.hasApiKey;
     return (
@@ -240,14 +254,7 @@ async function honchoFetch(endpoint, body, timeoutMs = 30000, cacheKey = null) {
 async function onChatChanged() {
     if (!isReady()) return;
 
-    // Reset all caches and guards for the new session
-    lastGenerationChatIndex = -1;
-    turnsSinceLastReasoning = Infinity;
-    turnsSinceLastContextRefresh = Infinity;
-    cachedContextText = null;
-    contextRefreshInFlight = false;
-    cachedReasoningText = null;
-    reasoningRefreshInFlight = false;
+    resetCaches();
 
     const rawChatId = getCurrentChatId();
     if (!rawChatId) return;
@@ -748,12 +755,14 @@ function bindSettingsListeners() {
 
     $('#honcho_workspace_id').on('input', function () {
         settings().workspaceId = $(this).val().trim();
+        resetCaches();
         saveSettingsDebounced();
         updateStatusIndicator();
     });
 
     $('input[name="honcho_peer_mode"]').on('change', function () {
         settings().peerMode = $(this).val();
+        resetCaches();
         saveSettingsDebounced();
     });
 
@@ -802,6 +811,7 @@ function bindSettingsListeners() {
     $('input[name="honcho_context_mode"]').on('change', function () {
         settings().contextMode = $(this).val();
         syncFunctionCallingFlag();  // symmetric — also clears the flag when user switches AWAY from tool_call
+        resetCaches();
         saveSettingsDebounced();
         updateConditionalSections();
     });
