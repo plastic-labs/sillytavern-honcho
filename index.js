@@ -34,7 +34,7 @@ const defaultSettings = {
     peerMode: 'single',
     sessionNaming: 'auto',
     customSessionName: '',
-    contextMode: 'prefetch',
+    contextMode: 'reasoning',
     prefetchQueries: ['What do you know about the user?'],
     prefetchInterval: 8,
     injectionPosition: extension_prompt_types.IN_PROMPT,
@@ -436,7 +436,7 @@ async function onGeneration() {
         }
 
         // Reasoning layer: dialectic peer.chat() with stale-while-revalidate
-        if (mode === 'prefetch') {
+        if (mode === 'reasoning') {
             const reasoningInterval = settings().prefetchInterval || 8;
             turnsSinceLastReasoning++;
 
@@ -674,7 +674,7 @@ function updateStatusIndicator() {
 
 function updateConditionalSections() {
     const mode = settings()?.contextMode;
-    $('#honcho_prefetch_section').toggle(mode === 'prefetch');
+    $('#honcho_prefetch_section').toggle(mode === 'reasoning');
 
     const position = Number(settings()?.injectionPosition);
     $('#honcho_depth_section').toggle(position === extension_prompt_types.IN_CHAT);
@@ -706,6 +706,12 @@ function syncFunctionCallingFlag() {
 
 function loadSettingsUI() {
     const s = settings();
+    // One-time migration for BUG-11: internal enum 'prefetch' → 'reasoning'
+    // (value now matches UI label). Safe no-op after migration.
+    if (s.contextMode === 'prefetch') {
+        s.contextMode = 'reasoning';
+        saveSettingsDebounced();
+    }
     $('#honcho_enabled').prop('checked', s.enabled);
     $('#honcho_workspace_id').val(s.workspaceId);
     $(`input[name="honcho_peer_mode"][value="${s.peerMode}"]`).prop('checked', true);
