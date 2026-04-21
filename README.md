@@ -48,7 +48,7 @@ Open Extensions (puzzle piece icon) and expand **Honcho Memory**:
 
 ### Global config (for multi-tool setups)
 
-If you already use Honcho with other tools (Claude Code, Cursor, Hermes), the extension auto-populates from `~/.honcho/config.json`:
+If you already use Honcho with other tools (Claude Code, Cursor, Hermes), the extension reads from `~/.honcho/config.json` when resolvable keys are present. The plugin checks `hosts.sillytavern.apiKey` first, then falls back to root-level `apiKey`. If neither resolves, enter your key via the Extensions panel.
 
 ```json
 {
@@ -65,6 +65,10 @@ The extension has two parts:
 
 - **Client extension** (browser) -- hooks into SillyTavern events to inject memory context and store messages
 - **Server plugin** (Node.js) -- proxies requests to the Honcho API
+
+### Peer observability
+
+By default, only the user peer accumulates derived memory — Honcho observes the user's messages and derives conclusions about them across sessions. The AI character's persona comes from its character card, not from peer derivation. If you want the character to have its own Honcho-derived state, configure it as an additional peer in session setup (see `POST /session` in the plugin routes below).
 
 ### Context modes
 
@@ -117,7 +121,7 @@ sillytavern-honcho/
 +-- install.sh             Installer (macOS/Linux)
 +-- install.ps1            Installer (Windows)
 +-- plugin/
-|   +-- index.js           Server plugin (7 routes)
+|   +-- index.js           Server plugin (9 routes: 1 GET + 8 POST)
 |   +-- package.json       @honcho-ai/sdk dependency
 ```
 
