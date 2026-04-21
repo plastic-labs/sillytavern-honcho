@@ -47,16 +47,42 @@ fi
 # 3. Install SDK dependencies
 echo "[*] Installing @honcho-ai/sdk..."
 cd "$PLUGIN_DIR" && npm install --silent
+cd "$ST_DIR"
 
-# 4. Check config.yaml for server plugins
+# 3.5 Ensure config.yaml exists. SillyTavern creates it on first `npm start`,
+#     not on `npm install`. Without this step, the check below runs against a
+#     missing file (silent on first-run users — BUG-4) and enableServerPlugins
+#     never gets flipped, so the plugin fails to load on first npm start.
 CONFIG="$ST_DIR/config.yaml"
-if [[ -f "$CONFIG" ]]; then
-    if grep -q "enableServerPlugins: true" "$CONFIG"; then
-        echo "[*] Server plugins already enabled in config.yaml"
+if [[ ! -f "$CONFIG" ]]; then
+    echo "[*] Generating config.yaml by starting SillyTavern briefly..."
+    ( cd "$ST_DIR" && npm start > /tmp/silly-first-launch.log 2>&1 ) &
+    ST_BOOT_PID=$!
+    for _ in $(seq 1 30); do
+        [[ -f "$CONFIG" ]] && break
+        sleep 1
+    done
+    kill "$ST_BOOT_PID" 2>/dev/null || true
+    sleep 2
+    pkill -f "node.*server.js" 2>/dev/null || true
+    if [[ ! -f "$CONFIG" ]]; then
+        echo "[!] config.yaml did not appear — inspect /tmp/silly-first-launch.log"
+        exit 1
+    fi
+    echo "[*] config.yaml created at $CONFIG"
+fi
+
+# 4. Enable server plugins in config.yaml (idempotent)
+if grep -q "^enableServerPlugins: true" "$CONFIG"; then
+    echo "[*] Server plugins already enabled in config.yaml"
+else
+    sed -i.bak 's/^enableServerPlugins: false/enableServerPlugins: true/' "$CONFIG"
+    rm -f "$CONFIG.bak"
+    if grep -q "^enableServerPlugins: true" "$CONFIG"; then
+        echo "[*] Enabled server plugins in config.yaml"
     else
-        echo ""
-        echo "[!] Server plugins are NOT enabled in config.yaml."
-        echo "    Add or change this line in $CONFIG:"
+        echo "[!] Could not set enableServerPlugins: true in $CONFIG"
+        echo "    Add this line manually and restart SillyTavern:"
         echo "      enableServerPlugins: true"
     fi
 fi
