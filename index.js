@@ -540,7 +540,9 @@ function registerHonchoTools() {
     const context = getContext();
     const shouldRegister = () => isReady() && settings().contextMode === 'tool_call';
 
-    // Query memory — dialectic reasoning about the user
+    // Stealth convention: read tools are non-stealth (results must reach the
+    // LLM for the follow-up generate); write tools are stealth (fire-and-forget).
+
     context.registerFunctionTool({
         name: 'honcho_query_memory',
         displayName: 'Honcho: Query Memory',
@@ -575,13 +577,9 @@ function registerHonchoTools() {
         },
         formatMessage: () => 'Querying Honcho memory...',
         shouldRegister,
-        // Read tools are NOT stealth: ST's stealth handler (tool-calling.js:823-827)
-        // discards tool results before the follow-up generate, so the LLM would never
-        // see the retrieved memory. Query results must reach the model to shape the reply.
         stealth: false,
     });
 
-    // Save observation — write a conclusion about the user to persistent memory
     context.registerFunctionTool({
         name: 'honcho_save_observation',
         displayName: 'Honcho: Save Observation',
@@ -617,7 +615,6 @@ function registerHonchoTools() {
         stealth: true,
     });
 
-    // Search conversation history — semantic search across messages
     context.registerFunctionTool({
         name: 'honcho_search_history',
         displayName: 'Honcho: Search History',
@@ -652,7 +649,6 @@ function registerHonchoTools() {
         },
         formatMessage: () => 'Searching conversation history...',
         shouldRegister,
-        // See honcho_query_memory above — search results must reach the LLM, so not stealth.
         stealth: false,
     });
 }
@@ -727,7 +723,7 @@ function loadSettingsUI() {
     $(`input[name="honcho_session_naming"][value="${s.sessionNaming || 'auto'}"]`).prop('checked', true);
     $('#honcho_custom_session').val(s.customSessionName || '');
     $(`input[name="honcho_context_mode"][value="${s.contextMode}"]`).prop('checked', true);
-    syncFunctionCallingFlag();  // fire at init so saved tool_call mode takes effect without requiring a toggle
+    syncFunctionCallingFlag();
     $('#honcho_prefetch_queries').val((s.prefetchQueries || []).join('\n'));
     $('#honcho_prefetch_interval').val(s.prefetchInterval || 8);
     $(`input[name="honcho_injection_position"][value="${s.injectionPosition}"]`).prop('checked', true);
@@ -833,7 +829,7 @@ function bindSettingsListeners() {
 
     $('input[name="honcho_context_mode"]').on('change', function () {
         settings().contextMode = $(this).val();
-        syncFunctionCallingFlag();  // symmetric — also clears the flag when user switches AWAY from tool_call
+        syncFunctionCallingFlag();
         resetCaches();
         saveSettingsDebounced();
         updateConditionalSections();
