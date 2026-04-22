@@ -490,7 +490,7 @@ export async function init(router) {
         }
     });
 
-    console.log('[honcho-proxy] Plugin initialized with 7 routes');
+    console.log('[honcho-proxy] Plugin initialized');
 }
 
 export async function exit() {
