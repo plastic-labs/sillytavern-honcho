@@ -103,7 +103,7 @@ Every generation injects the peer representation and session summary from `sessi
 | --- | --- |
 | **Context only** | Base layer only -- peer representation + session summary |
 | **Reasoning** (default) | Base layer + dialectic `peer.chat()` queries on an interval |
-| **Tool call** | Base layer + function tools the LLM can call on demand (query, save observation, search) |
+| **Tool call** | Base layer + function tools the LLM can call on demand (query, save conclusion, search) |
 
 ### Peer modes
 

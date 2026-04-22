@@ -63,6 +63,16 @@ const MAX_LATE_CACHE = 50;
 const lateResultCache = new Map();
 /** In-flight background promises that outlived their timeout. Key = cache key. */
 const pendingBackgroundQueries = new Map();
+/** In-flight AbortControllers for honchoFetch calls. Walked on extension disable so
+ *  pending requests don't keep running after the user toggled off. */
+const activeAbortControllers = new Set();
+
+function abortAllInFlight() {
+    for (const controller of activeAbortControllers) {
+        controller.abort();
+    }
+    activeAbortControllers.clear();
+}
 
 // ─── Helpers ──────────────────────────────────────────────
 
@@ -84,6 +94,8 @@ function resetCaches() {
     contextRefreshInFlight = false;
     cachedReasoningText = null;
     reasoningRefreshInFlight = false;
+    lateResultCache.clear();
+    pendingBackgroundQueries.clear();
 }
 
 function isReady() {
@@ -170,8 +182,24 @@ async function honchoFetchRaw(endpoint, body, signal = null) {
 
         return await response.json();
     } catch (err) {
-        console.warn(`[Honcho] ${endpoint} error:`, err.message);
+        if (err.name !== 'AbortError') {
+            console.warn(`[Honcho] ${endpoint} error:`, err.message);
+        }
         return null;
+    }
+}
+
+/** honchoFetchRaw with its AbortController tracked in activeAbortControllers
+ *  so disable-flow cancels the fetch. */
+async function honchoFetchRawTracked(endpoint, body) {
+    // Re-check: disable may have fired after the caller's isReady() gate.
+    if (!isReady()) return null;
+    const controller = new AbortController();
+    activeAbortControllers.add(controller);
+    try {
+        return await honchoFetchRaw(endpoint, body, controller.signal);
+    } finally {
+        activeAbortControllers.delete(controller);
     }
 }
 
@@ -197,8 +225,9 @@ async function honchoFetch(endpoint, body, timeoutMs = 30000, cacheKey = null) {
     }
 
     if (!cacheKey) {
-        // Hard abort for write endpoints — cancelled requests don't overwrite current state
+        // Hard abort for write endpoints — a cancelled request must not land stale state.
         const controller = new AbortController();
+        activeAbortControllers.add(controller);
         const timer = setTimeout(() => controller.abort(), timeoutMs);
         try {
             return await honchoFetchRaw(endpoint, body, controller.signal);
@@ -211,11 +240,15 @@ async function honchoFetch(endpoint, body, timeoutMs = 30000, cacheKey = null) {
             return null;
         } finally {
             clearTimeout(timer);
+            activeAbortControllers.delete(controller);
         }
     }
 
-    // Soft timeout with background caching (read endpoints)
-    const fetchPromise = honchoFetchRaw(endpoint, body);
+    // Soft timeout with background caching (read endpoints).
+    const readController = new AbortController();
+    activeAbortControllers.add(readController);
+    const fetchPromise = honchoFetchRaw(endpoint, body, readController.signal)
+        .finally(() => activeAbortControllers.delete(readController));
     try {
         const result = await Promise.race([
             fetchPromise,
@@ -228,6 +261,10 @@ async function honchoFetch(endpoint, body, timeoutMs = 30000, cacheKey = null) {
         console.warn(`[Honcho] ${endpoint} timed out after ${timeoutMs}ms (key: ${cacheKey})`);
         if (!pendingBackgroundQueries.has(cacheKey)) {
             const bgPromise = fetchPromise.then(result => {
+                if (!isReady()) {
+                    pendingBackgroundQueries.delete(cacheKey);
+                    return;
+                }
                 if (result) {
                     // Evict oldest entry if cache is full
                     if (lateResultCache.size >= MAX_LATE_CACHE) {
@@ -350,12 +387,14 @@ async function fetchReasoningQueries(honchoMeta, lastUserMessage) {
     const results = [];
 
     for (const query of queries) {
+        if (!isReady()) break;
+
         let trimmed = query.trim();
         if (!trimmed) continue;
 
         trimmed = trimmed.replace(/\{\{message\}\}/gi, lastUserMessage);
 
-        const result = await honchoFetchRaw('/chat', {
+        const result = await honchoFetchRawTracked('/chat', {
             workspaceId: settings().workspaceId,
             peerId: honchoMeta.userPeerId,
             query: trimmed,
@@ -413,6 +452,7 @@ async function onGeneration() {
         if (cachedContextText === null) {
             // First turn of session — blocking fetch, must wait
             const contextResult = await honchoFetch('/context', contextBody);
+            if (!isReady()) return;
             if (contextResult?.context) {
                 cachedContextText = contextResult.context;
             }
@@ -421,8 +461,9 @@ async function onGeneration() {
             // Background refresh — serve stale, update for next turn
             turnsSinceLastContextRefresh = 0;
             contextRefreshInFlight = true;
-            honchoFetchRaw('/context', { workspaceId: settings().workspaceId, ...contextBody })
+            honchoFetchRawTracked('/context', { workspaceId: settings().workspaceId, ...contextBody })
                 .then(result => {
+                    if (!isReady()) return;
                     if (result?.context) {
                         cachedContextText = result.context;
                     }
@@ -443,6 +484,9 @@ async function onGeneration() {
             if (cachedReasoningText === null) {
                 // First turn of session — blocking fetch
                 const results = await fetchReasoningQueries(honchoMeta, lastUserMessage);
+                // fetchReasoningQueries can return partial results from iterations
+                // that completed before a mid-loop abort; recheck before caching.
+                if (!isReady()) return;
                 if (results) {
                     cachedReasoningText = results;
                 }
@@ -453,6 +497,7 @@ async function onGeneration() {
                 reasoningRefreshInFlight = true;
                 fetchReasoningQueries(honchoMeta, lastUserMessage)
                     .then(results => {
+                        if (!isReady()) return;
                         if (results) {
                             cachedReasoningText = results;
                         }
@@ -581,16 +626,16 @@ function registerHonchoTools() {
     });
 
     context.registerFunctionTool({
-        name: 'honcho_save_observation',
-        displayName: 'Honcho: Save Observation',
-        description: 'Save an important observation, insight, or fact about the user to persistent memory. Use this when you learn something worth remembering: preferences, biographical details, emotional states, recurring topics, or relationship dynamics.',
+        name: 'honcho_save_conclusion',
+        displayName: 'Honcho: Save Conclusion',
+        description: 'Save an important conclusion, insight, or fact about the user to persistent memory. Use this when you learn something worth remembering: preferences, biographical details, emotional states, recurring topics, or relationship dynamics.',
         parameters: {
             $schema: 'http://json-schema.org/draft-04/schema#',
             type: 'object',
             properties: {
                 content: {
                     type: 'string',
-                    description: 'The observation to save, e.g. "The user prefers riddles over trivia" or "User\'s name is Erosika"',
+                    description: 'The conclusion to save, e.g. "The user prefers riddles over trivia" or "User\'s name is Erosika"',
                 },
             },
             required: ['content'],
@@ -608,9 +653,9 @@ function registerHonchoTools() {
                 content: args.content,
             });
 
-            return result ? `Observation saved: ${args.content}` : 'Failed to save observation.';
+            return result ? `Conclusion saved: ${args.content}` : 'Failed to save conclusion.';
         },
-        formatMessage: () => 'Saving observation to memory...',
+        formatMessage: () => 'Saving conclusion to memory...',
         shouldRegister,
         stealth: true,
     });
@@ -764,10 +809,11 @@ function bindSettingsListeners() {
         settings().enabled = nowEnabled;
         saveSettingsDebounced();
         updateStatusIndicator();
-        // Trigger session setup on disabled→enabled transition so tool calls
-        // don't short-circuit with "Honcho session not initialized" on the
-        // current chat. onChatChanged is self-guarded on isReady() + chat id.
-        if (!wasEnabled && nowEnabled) {
+        if (wasEnabled && !nowEnabled) {
+            abortAllInFlight();
+            resetCaches();
+        } else if (!wasEnabled && nowEnabled) {
+            // onChatChanged is self-guarded on isReady() + chat id.
             onChatChanged();
         }
     });
