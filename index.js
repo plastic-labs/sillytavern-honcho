@@ -63,6 +63,16 @@ const MAX_LATE_CACHE = 50;
 const lateResultCache = new Map();
 /** In-flight background promises that outlived their timeout. Key = cache key. */
 const pendingBackgroundQueries = new Map();
+/** In-flight AbortControllers for honchoFetch calls. Walked on extension disable so
+ *  pending requests don't keep running after the user toggled off. */
+const activeAbortControllers = new Set();
+
+function abortAllInFlight() {
+    for (const controller of activeAbortControllers) {
+        controller.abort();
+    }
+    activeAbortControllers.clear();
+}
 
 // ─── Helpers ──────────────────────────────────────────────
 
@@ -84,6 +94,8 @@ function resetCaches() {
     contextRefreshInFlight = false;
     cachedReasoningText = null;
     reasoningRefreshInFlight = false;
+    lateResultCache.clear();
+    pendingBackgroundQueries.clear();
 }
 
 function isReady() {
@@ -170,8 +182,33 @@ async function honchoFetchRaw(endpoint, body, signal = null) {
 
         return await response.json();
     } catch (err) {
-        console.warn(`[Honcho] ${endpoint} error:`, err.message);
+        // Disable-flow aborts are expected — don't pollute the console on toggle-off.
+        if (err.name !== 'AbortError') {
+            console.warn(`[Honcho] ${endpoint} error:`, err.message);
+        }
         return null;
+    }
+}
+
+/**
+ * Like honchoFetchRaw but registers an AbortController in activeAbortControllers
+ * so disable-flow cancels direct-caller fetches alongside honchoFetch's tracked ones.
+ * Use from call sites that intentionally bypass honchoFetch's timeout/caching
+ * machinery (reasoning queries, background context refresh) but still need
+ * lifecycle tracking.
+ */
+async function honchoFetchRawTracked(endpoint, body) {
+    // Short-circuit if disable fired between the caller's isReady() gate and this call.
+    // Covers loops, delayed-start, and any future call shape that dispatches a new
+    // controller after abortAllInFlight() already drained the Set. Without this, loop
+    // iterations past the abort register fresh controllers that never get cancelled.
+    if (!isReady()) return null;
+    const controller = new AbortController();
+    activeAbortControllers.add(controller);
+    try {
+        return await honchoFetchRaw(endpoint, body, controller.signal);
+    } finally {
+        activeAbortControllers.delete(controller);
     }
 }
 
@@ -197,8 +234,11 @@ async function honchoFetch(endpoint, body, timeoutMs = 30000, cacheKey = null) {
     }
 
     if (!cacheKey) {
-        // Hard abort for write endpoints — cancelled requests don't overwrite current state
+        // Hard abort for write endpoints — cancelled requests don't overwrite current state.
+        // Controller is tracked in activeAbortControllers so disable-flow aborts it alongside
+        // the timeout timer.
         const controller = new AbortController();
+        activeAbortControllers.add(controller);
         const timer = setTimeout(() => controller.abort(), timeoutMs);
         try {
             return await honchoFetchRaw(endpoint, body, controller.signal);
@@ -211,11 +251,17 @@ async function honchoFetch(endpoint, body, timeoutMs = 30000, cacheKey = null) {
             return null;
         } finally {
             clearTimeout(timer);
+            activeAbortControllers.delete(controller);
         }
     }
 
-    // Soft timeout with background caching (read endpoints)
-    const fetchPromise = honchoFetchRaw(endpoint, body);
+    // Soft timeout with background caching (read endpoints).
+    // Controller is tracked so a disable-flow abort cancels any background-running fetch
+    // too (prevents stale late-result cache entries after the user toggled off).
+    const readController = new AbortController();
+    activeAbortControllers.add(readController);
+    const fetchPromise = honchoFetchRaw(endpoint, body, readController.signal)
+        .finally(() => activeAbortControllers.delete(readController));
     try {
         const result = await Promise.race([
             fetchPromise,
@@ -228,6 +274,13 @@ async function honchoFetch(endpoint, body, timeoutMs = 30000, cacheKey = null) {
         console.warn(`[Honcho] ${endpoint} timed out after ${timeoutMs}ms (key: ${cacheKey})`);
         if (!pendingBackgroundQueries.has(cacheKey)) {
             const bgPromise = fetchPromise.then(result => {
+                // Clobber-race guard: if the user disabled while this fetch was
+                // in-flight, don't land its result in the late cache where it
+                // would be served on re-enable.
+                if (!isReady()) {
+                    pendingBackgroundQueries.delete(cacheKey);
+                    return;
+                }
                 if (result) {
                     // Evict oldest entry if cache is full
                     if (lateResultCache.size >= MAX_LATE_CACHE) {
@@ -350,12 +403,18 @@ async function fetchReasoningQueries(honchoMeta, lastUserMessage) {
     const results = [];
 
     for (const query of queries) {
+        // Short-circuit post-abort: each iteration would otherwise register a fresh
+        // controller that abortAllInFlight() already missed (it only cancels controllers
+        // in-flight AT abort time). Checking isReady() between iterations stops the loop
+        // from walking past a disable.
+        if (!isReady()) break;
+
         let trimmed = query.trim();
         if (!trimmed) continue;
 
         trimmed = trimmed.replace(/\{\{message\}\}/gi, lastUserMessage);
 
-        const result = await honchoFetchRaw('/chat', {
+        const result = await honchoFetchRawTracked('/chat', {
             workspaceId: settings().workspaceId,
             peerId: honchoMeta.userPeerId,
             query: trimmed,
@@ -413,6 +472,11 @@ async function onGeneration() {
         if (cachedContextText === null) {
             // First turn of session — blocking fetch, must wait
             const contextResult = await honchoFetch('/context', contextBody);
+            // Symmetry with the refresh-branch clobber guard at :488. honchoFetch
+            // returns null on AbortError so this is currently latent, but making
+            // the invariant explicit at every cache-writing await prevents a
+            // future regression if honchoFetch's error semantics shift.
+            if (!isReady()) return;
             if (contextResult?.context) {
                 cachedContextText = contextResult.context;
             }
@@ -421,8 +485,12 @@ async function onGeneration() {
             // Background refresh — serve stale, update for next turn
             turnsSinceLastContextRefresh = 0;
             contextRefreshInFlight = true;
-            honchoFetchRaw('/context', { workspaceId: settings().workspaceId, ...contextBody })
+            honchoFetchRawTracked('/context', { workspaceId: settings().workspaceId, ...contextBody })
                 .then(result => {
+                    // Closes the post-resolve clobber race: a fetch can resolve and
+                    // delete its controller microseconds before abortAllInFlight()
+                    // fires, then land here and write stale data post-disable.
+                    if (!isReady()) return;
                     if (result?.context) {
                         cachedContextText = result.context;
                     }
@@ -443,6 +511,12 @@ async function onGeneration() {
             if (cachedReasoningText === null) {
                 // First turn of session — blocking fetch
                 const results = await fetchReasoningQueries(honchoMeta, lastUserMessage);
+                // Clobber guard — fetchReasoningQueries joins partial results from
+                // iterations that completed before a mid-loop abort, so `results`
+                // can be a truthy string even on disable. Without this check, we'd
+                // write stale partial data to cachedReasoningText after the user
+                // toggled off. Same bug class as the refresh-branch guard below.
+                if (!isReady()) return;
                 if (results) {
                     cachedReasoningText = results;
                 }
@@ -453,6 +527,8 @@ async function onGeneration() {
                 reasoningRefreshInFlight = true;
                 fetchReasoningQueries(honchoMeta, lastUserMessage)
                     .then(results => {
+                        // Same post-resolve clobber guard as the context refresh above.
+                        if (!isReady()) return;
                         if (results) {
                             cachedReasoningText = results;
                         }
@@ -764,6 +840,16 @@ function bindSettingsListeners() {
         settings().enabled = nowEnabled;
         saveSettingsDebounced();
         updateStatusIndicator();
+        // On enabled→disabled transition, abort any in-flight honchoFetch calls so
+        // they don't keep running (or land stale results in the late cache) after
+        // the user toggled off. isReady() already blocks NEW calls — this closes
+        // the in-flight fetch half of BUG-7. resetCaches() is belt-and-suspenders:
+        // even if a .then body wins the post-resolve race with abortAllInFlight(),
+        // its write lands in a cache we just cleared.
+        if (wasEnabled && !nowEnabled) {
+            abortAllInFlight();
+            resetCaches();
+        }
         // Trigger session setup on disabled→enabled transition so tool calls
         // don't short-circuit with "Honcho session not initialized" on the
         // current chat. onChatChanged is self-guarded on isReady() + chat id.
