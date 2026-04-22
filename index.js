@@ -34,7 +34,7 @@ const defaultSettings = {
     peerMode: 'single',
     sessionNaming: 'auto',
     customSessionName: '',
-    contextMode: 'prefetch',
+    contextMode: 'reasoning',
     prefetchQueries: ['What do you know about the user?'],
     prefetchInterval: 8,
     injectionPosition: extension_prompt_types.IN_PROMPT,
@@ -436,7 +436,7 @@ async function onGeneration() {
         }
 
         // Reasoning layer: dialectic peer.chat() with stale-while-revalidate
-        if (mode === 'prefetch') {
+        if (mode === 'reasoning') {
             const reasoningInterval = settings().prefetchInterval || 8;
             turnsSinceLastReasoning++;
 
@@ -661,20 +661,28 @@ function registerHonchoTools() {
 
 function updateStatusIndicator() {
     const $status = $('#honcho_status');
+    const hasKey = !!(secret_state[SECRET_KEYS.HONCHO] || globalConfigCache?.hasApiKey);
+
+    // BUG-6 fix: swap API-key placeholder so users get feedback on the input
+    // itself after save, not only in the #honcho_status line below. The input
+    // is SillyTavern's manage-api-keys pattern (maxlength=0, readonly), so we
+    // can't set a value — but the placeholder IS the visible text.
+    $('#honcho_api_key').attr('placeholder', hasKey ? 'Key set — click to change' : 'Click to set key');
+
     if (isReady()) {
         $status.text('Ready').removeClass('not-ready').addClass('ready');
     } else {
         const reasons = [];
         if (!settings()?.enabled) reasons.push('disabled');
         if (!settings()?.workspaceId) reasons.push('no workspace ID');
-        if (!secret_state[SECRET_KEYS.HONCHO] && !globalConfigCache?.hasApiKey) reasons.push('no API key');
+        if (!hasKey) reasons.push('no API key');
         $status.text(`Not ready: ${reasons.join(', ')}`).removeClass('ready').addClass('not-ready');
     }
 }
 
 function updateConditionalSections() {
     const mode = settings()?.contextMode;
-    $('#honcho_prefetch_section').toggle(mode === 'prefetch');
+    $('#honcho_prefetch_section').toggle(mode === 'reasoning');
 
     const position = Number(settings()?.injectionPosition);
     $('#honcho_depth_section').toggle(position === extension_prompt_types.IN_CHAT);
@@ -706,6 +714,13 @@ function syncFunctionCallingFlag() {
 
 function loadSettingsUI() {
     const s = settings();
+    // One-time migration for BUG-11: internal enum 'prefetch' → 'reasoning'
+    // (value now matches UI label). Safe no-op after migration.
+    if (s.contextMode === 'prefetch') {
+        s.contextMode = 'reasoning';
+        saveSettingsDebounced();
+        console.log('[Honcho] Migrated contextMode: prefetch → reasoning');
+    }
     $('#honcho_enabled').prop('checked', s.enabled);
     $('#honcho_workspace_id').val(s.workspaceId);
     $(`input[name="honcho_peer_mode"][value="${s.peerMode}"]`).prop('checked', true);
@@ -748,9 +763,17 @@ function loadSettingsUI() {
 
 function bindSettingsListeners() {
     $('#honcho_enabled').on('change', function () {
-        settings().enabled = $(this).prop('checked');
+        const wasEnabled = settings().enabled;
+        const nowEnabled = $(this).prop('checked');
+        settings().enabled = nowEnabled;
         saveSettingsDebounced();
         updateStatusIndicator();
+        // Trigger session setup on disabled→enabled transition so tool calls
+        // don't short-circuit with "Honcho session not initialized" on the
+        // current chat. onChatChanged is self-guarded on isReady() + chat id.
+        if (!wasEnabled && nowEnabled) {
+            onChatChanged();
+        }
     });
 
     $('#honcho_workspace_id').on('input', function () {
