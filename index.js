@@ -657,16 +657,16 @@ function registerHonchoTools() {
     });
 
     context.registerFunctionTool({
-        name: 'honcho_save_observation',
-        displayName: 'Honcho: Save Observation',
-        description: 'Save an important observation, insight, or fact about the user to persistent memory. Use this when you learn something worth remembering: preferences, biographical details, emotional states, recurring topics, or relationship dynamics.',
+        name: 'honcho_save_conclusion',
+        displayName: 'Honcho: Save Conclusion',
+        description: 'Save an important conclusion, insight, or fact about the user to persistent memory. Use this when you learn something worth remembering: preferences, biographical details, emotional states, recurring topics, or relationship dynamics.',
         parameters: {
             $schema: 'http://json-schema.org/draft-04/schema#',
             type: 'object',
             properties: {
                 content: {
                     type: 'string',
-                    description: 'The observation to save, e.g. "The user prefers riddles over trivia" or "User\'s name is Erosika"',
+                    description: 'The conclusion to save, e.g. "The user prefers riddles over trivia" or "User\'s name is Erosika"',
                 },
             },
             required: ['content'],
@@ -684,9 +684,9 @@ function registerHonchoTools() {
                 content: args.content,
             });
 
-            return result ? `Observation saved: ${args.content}` : 'Failed to save observation.';
+            return result ? `Conclusion saved: ${args.content}` : 'Failed to save conclusion.';
         },
-        formatMessage: () => 'Saving observation to memory...',
+        formatMessage: () => 'Saving conclusion to memory...',
         shouldRegister,
         stealth: true,
     });

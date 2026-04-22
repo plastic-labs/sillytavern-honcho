@@ -455,7 +455,7 @@ export async function init(router) {
         }
     });
 
-    // POST /conclusion — Create a conclusion (persistent observation) about a peer
+    // POST /conclusion — Create a conclusion about a peer
     router.post('/conclusion', async (req, res) => {
         try {
             const { peerId, content } = req.body;
