@@ -291,6 +291,7 @@ export async function init(router) {
             hasApiKey: !!(stConfig.apiKey || hasSecretKey),
             workspace: stConfig.workspace,
             peerName: stConfig.peerName,
+            peerNameOverride: globalConfig?.hosts?.sillytavern?.peerName || null,
             aiPeer: stConfig.aiPeer,
             enabled: stConfig.enabled,
         });

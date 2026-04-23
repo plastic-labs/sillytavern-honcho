@@ -114,13 +114,14 @@ function settings() {
 /** Global config values fetched from ~/.honcho/config.json via the plugin */
 let globalConfigCache = null;
 
-/**
- * Resolve the user peer ID based on current peer mode.
- * Priority: globalConfig.peerName > local settings peerName > ST persona name
- */
+// Resolution: hosts.sillytavern.peerName > ST persona (non-default) > local > root.
 function getUserPeerId() {
     const context = getContext();
-    const explicit = globalConfigCache?.peerName || settings().peerName || null;
+    const override = globalConfigCache?.peerNameOverride || null;
+    const stPersona = context.name1 && context.name1 !== 'User' ? context.name1 : null;
+    const local = settings().peerName || null;
+    const root = globalConfigCache?.peerName || null;
+    const explicit = override || stPersona || local || root;
 
     if (explicit) {
         if (settings().peerMode === 'per_persona') {
@@ -133,11 +134,38 @@ function getUserPeerId() {
         return sanitizeId(explicit);
     }
 
-    // Fallback: use ST display name
+    // Fallback: use ST display name (catches name1 === 'User')
     if (settings().peerMode === 'per_persona') {
         return sanitizeId(context.name1 || 'default-user');
     }
     return sanitizeId(context.name1 || 'user');
+}
+
+// Write ST persona → hosts.sillytavern.peerName when no explicit override exists.
+async function syncSTPersonaToGlobal() {
+    if (settings().ignoreGlobalConfig) return;
+    if (!globalConfigCache?.found) return;
+    if (globalConfigCache.peerNameOverride) return; // respect explicit panel override
+    const persona = (getContext().name1 || '').trim();
+    if (!persona || persona === 'User') return;
+    try {
+        const resp = await fetch(`${PLUGIN_BASE}/config/update`, {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ peerName: persona }),
+        });
+        if (!resp.ok) return;
+        const fresh = await fetch(`${PLUGIN_BASE}/config`, {
+            method: 'GET',
+            headers: getRequestHeaders(),
+        });
+        if (fresh.ok) globalConfigCache = await fresh.json();
+        resetCaches();
+        if ($('#honcho_peer_name').length && document.activeElement?.id !== 'honcho_peer_name') {
+            $('#honcho_peer_name').val(persona);
+        }
+        console.log(`[Honcho] Synced ST persona → hosts.sillytavern.peerName: ${persona}`);
+    } catch { /* best-effort */ }
 }
 
 /**
@@ -1035,6 +1063,10 @@ function bindSettingsListeners() {
     // React to API key changes
     eventSource.on(event_types.SECRET_WRITTEN, () => updateStatusIndicator());
     eventSource.on(event_types.SECRET_DELETED, () => updateStatusIndicator());
+
+    if (event_types.PERSONA_CREATED) eventSource.on(event_types.PERSONA_CREATED, syncSTPersonaToGlobal);
+    if (event_types.PERSONA_RENAMED) eventSource.on(event_types.PERSONA_RENAMED, syncSTPersonaToGlobal);
+    if (event_types.PERSONA_CHANGED) eventSource.on(event_types.PERSONA_CHANGED, syncSTPersonaToGlobal);
 }
 
 // ─── Init ─────────────────────────────────────────────────
@@ -1094,7 +1126,8 @@ jQuery(async () => {
     loadSettingsUI();
     bindSettingsListeners();
 
-    // Register function tools for tool_call mode
+    syncSTPersonaToGlobal();
+
     registerHonchoTools();
 
     // Subscribe to events
