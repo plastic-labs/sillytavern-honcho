@@ -22,6 +22,7 @@ import {
 import { SECRET_KEYS, secret_state } from '../../../secrets.js';
 import { selected_group } from '../../../group-chats.js';
 import { oai_settings } from '../../../openai.js';
+import { callGenericPopup, POPUP_TYPE, POPUP_RESULT } from '../../../popup.js';
 
 const MODULE_NAME = 'honcho';
 const PLUGIN_BASE = '/api/plugins/honcho-proxy';
@@ -139,6 +140,47 @@ function getUserPeerId() {
         return sanitizeId(context.name1 || 'default-user');
     }
     return sanitizeId(context.name1 || 'user');
+}
+
+// Themed diff dialog for the re-enable flow.
+function promptDiffResolution(diffs) {
+    const $content = $('<div>');
+    $content.append($('<h3>').text('Re-enable global config'));
+    $content.append($('<p>').text('Your local values differ from ~/.honcho/config.json. Choose which direction to sync:'));
+    const $table = $('<table style="margin: 0.8em auto; border-collapse: collapse; font-family: monospace; font-size: 0.9em;">');
+    const $thead = $('<thead>').append(
+        $('<tr>').append(
+            $('<th style="text-align: left; padding: 0.3em 1em; opacity: 0.7;">').text('Field'),
+            $('<th style="text-align: left; padding: 0.3em 1em; opacity: 0.7;">').text('Global'),
+            $('<th style="text-align: left; padding: 0.3em 1em; opacity: 0.7;">').text('Local'),
+        ),
+    );
+    const $tbody = $('<tbody>');
+    for (const d of diffs) {
+        $tbody.append(
+            $('<tr>').append(
+                $('<td style="padding: 0.2em 1em;">').text(d.field),
+                $('<td style="padding: 0.2em 1em;">').text(d.global || '(empty)'),
+                $('<td style="padding: 0.2em 1em;">').text(d.local || '(empty)'),
+            ),
+        );
+    }
+    $table.append($thead, $tbody);
+    $content.append($table);
+    $content.append($('<p style="font-size: 0.85em; opacity: 0.7; margin-top: 0.5em;">').html(
+        '<b>Inherit</b>: pull global values into this SillyTavern install.<br/>' +
+        '<b>Push local</b>: overwrite the global config with your local values.',
+    ));
+
+    return callGenericPopup($content[0], POPUP_TYPE.CONFIRM, '', {
+        okButton: 'Inherit (pull global)',
+        cancelButton: 'Cancel',
+        customButtons: [{ text: 'Push local to global', result: 2, classes: ['menu_button'] }],
+    }).then(result => {
+        if (result === POPUP_RESULT.AFFIRMATIVE) return 'inherit';
+        if (result === 2) return 'push';
+        return 'cancel';
+    });
 }
 
 // Write ST persona → hosts.sillytavern.peerName when no explicit override exists.
@@ -946,27 +988,70 @@ function bindSettingsListeners() {
         savePeerName();
     });
 
-    // Enable/Disable global config detection. Opts out of auto-reading
-    // ~/.honcho/config.json. Peer-name field stays visible; saves become local.
     $('#honcho_ignore_global_btn').on('click', async function () {
         const wasIgnoring = !!settings().ignoreGlobalConfig;
-        const nowIgnore = !wasIgnoring;
-        settings().ignoreGlobalConfig = nowIgnore;
-        saveSettingsDebounced();
-        if (nowIgnore) {
-            globalConfigCache = null;
-        } else {
-            // Re-enabling: pull fresh so UI populates without a separate click
+
+        if (wasIgnoring) {
+            // Re-enabling: diff local vs global, ask which direction to sync
+            let freshGlobal = null;
             try {
                 const resp = await fetch(`${PLUGIN_BASE}/config`, {
                     method: 'GET',
                     headers: getRequestHeaders(),
                 });
-                globalConfigCache = resp.ok ? await resp.json() : null;
-            } catch {
-                globalConfigCache = null;
+                if (resp.ok) freshGlobal = await resp.json();
+            } catch { /* no-op */ }
+
+            if (freshGlobal?.found) {
+                const s = settings();
+                const globalWs = freshGlobal.workspace || '';
+                const globalPeer = freshGlobal.peerNameOverride || freshGlobal.peerName || '';
+                const diffs = [];
+                if (globalWs !== (s.workspaceId || '')) {
+                    diffs.push({ field: 'workspace', global: globalWs, local: s.workspaceId || '' });
+                }
+                if (globalPeer !== (s.peerName || '')) {
+                    diffs.push({ field: 'peerName', global: globalPeer, local: s.peerName || '' });
+                }
+
+                if (diffs.length > 0) {
+                    const action = await promptDiffResolution(diffs);
+                    if (action === 'cancel') return;
+                    if (action === 'inherit') {
+                        for (const d of diffs) {
+                            if (d.field === 'workspace') s.workspaceId = d.global;
+                            if (d.field === 'peerName') s.peerName = '';
+                        }
+                        saveSettingsDebounced();
+                    } else if (action === 'push') {
+                        const payload = {};
+                        for (const d of diffs) {
+                            if (d.field === 'workspace') payload.workspace = d.local;
+                            if (d.field === 'peerName') payload.peerName = d.local;
+                        }
+                        try {
+                            await fetch(`${PLUGIN_BASE}/config/update`, {
+                                method: 'POST',
+                                headers: getRequestHeaders(),
+                                body: JSON.stringify(payload),
+                            });
+                            const refresh = await fetch(`${PLUGIN_BASE}/config`, {
+                                method: 'GET',
+                                headers: getRequestHeaders(),
+                            });
+                            if (refresh.ok) freshGlobal = await refresh.json();
+                        } catch { /* best-effort */ }
+                    }
+                }
             }
+
+            globalConfigCache = freshGlobal;
+        } else {
+            globalConfigCache = null;
         }
+
+        settings().ignoreGlobalConfig = !wasIgnoring;
+        saveSettingsDebounced();
         resetCaches();
         loadSettingsUI();
     });
