@@ -19,6 +19,45 @@ const clientCache = new Map();
 /** Global Honcho config loaded from ~/.honcho/config.json */
 let globalConfig = null;
 
+// Honcho API caps: 25,000 chars per stored message, 10,000 per dialectic query.
+// Leave a small safety margin to avoid edge-case rejections.
+const MESSAGE_CHAR_LIMIT = 24_500;
+const QUERY_CHAR_LIMIT = 9_500;
+
+function truncate(text, limit, label) {
+    if (typeof text !== 'string' || text.length <= limit) return text;
+    console.warn(`[honcho-proxy] Truncating ${label}: ${text.length} → ${limit} chars`);
+    return text.slice(0, limit);
+}
+
+// Split long messages at paragraph/sentence boundaries so nothing is lost to the API cap.
+// Ordered pairs of [boundary, length-after-boundary]; length matters for multi-char markers
+// like ". " (2) vs single-char CJK punctuation like "。" (1).
+const CHUNK_BOUNDARIES = [
+    ['\n\n', 2], ['\n', 1],
+    ['. ', 2], ['.\n', 2], ['! ', 2], ['? ', 2], ['; ', 2],
+    ['。', 1], ['！', 1], ['？', 1], ['；', 1], ['、', 1], [',', 1], [' ', 1],
+];
+function chunkText(text, limit) {
+    if (typeof text !== 'string' || text.length <= limit) return [text];
+    const chunks = [];
+    let i = 0;
+    while (i < text.length) {
+        if (text.length - i <= limit) { chunks.push(text.slice(i)); break; }
+        const window = i + limit;
+        const floor = i + limit * 0.5;
+        let best = -1;
+        for (const [marker, len] of CHUNK_BOUNDARIES) {
+            const idx = text.lastIndexOf(marker, window);
+            if (idx > floor && idx + len > best) best = idx + len;
+        }
+        const end = best > 0 ? best : window;
+        chunks.push(text.slice(i, end));
+        i = end;
+    }
+    return chunks;
+}
+
 /**
  * Load the global Honcho config from ~/.honcho/config.json.
  * Returns the parsed config or null if not found/invalid.
@@ -30,7 +69,13 @@ function loadGlobalConfig() {
         const config = JSON.parse(raw);
         console.log(`[honcho-proxy] Loaded global config from ${configPath}`);
         return config;
-    } catch {
+    } catch (err) {
+        // ENOENT = file doesn't exist yet (fine, bootstrap path will create it).
+        // Any other error (partial read mid-write, malformed JSON) is suspect —
+        // log and signal "don't know" so we don't clobber someone else's write.
+        if (err.code !== 'ENOENT') {
+            console.warn(`[honcho-proxy] Failed to load ${configPath}: ${err.message}`);
+        }
         return null;
     }
 }
@@ -48,7 +93,7 @@ function getGlobalConfigForST() {
 
     const stHost = globalConfig.hosts?.sillytavern;
     return {
-        apiKey: globalConfig.apiKey || null,
+        apiKey: stHost?.apiKey || globalConfig.apiKey || null,
         peerName: stHost?.peerName || globalConfig.peerName || null,
         enabled: globalConfig.enabled ?? false,
         workspace: stHost?.workspace || globalConfig.workspace || null,
@@ -67,21 +112,22 @@ function refreshGlobalConfig() {
     }
 }
 
-/**
- * Write the current globalConfig back to ~/.honcho/config.json.
- * Creates the directory if needed.
- */
+// Atomic write via tmp + rename — readers never see a partial file and
+// concurrent writers from other honcho tools can't corrupt mid-write.
 function saveGlobalConfig() {
     if (!globalConfig) return false;
+    const tmpPath = `${GLOBAL_CONFIG_PATH}.tmp.${process.pid}`;
     try {
         const dir = path.dirname(GLOBAL_CONFIG_PATH);
         if (!fs.existsSync(dir)) {
             fs.mkdirSync(dir, { recursive: true });
         }
-        fs.writeFileSync(GLOBAL_CONFIG_PATH, JSON.stringify(globalConfig, null, 2) + '\n');
+        fs.writeFileSync(tmpPath, JSON.stringify(globalConfig, null, 2) + '\n');
+        fs.renameSync(tmpPath, GLOBAL_CONFIG_PATH);
         return true;
     } catch (err) {
         console.error(`[honcho-proxy] Failed to save global config: ${err.message}`);
+        try { fs.unlinkSync(tmpPath); } catch { /* no-op */ }
         return false;
     }
 }
@@ -90,36 +136,19 @@ function saveGlobalConfig() {
  * Update the hosts.sillytavern entry in the global config.
  * Re-reads from disk first to avoid clobbering other tools' writes.
  */
-function updateSTHost(updates) {
+function updateSTHost(updates, deletes = []) {
     refreshGlobalConfig();
-    if (!globalConfig) return;
+    // First-write bootstrap: create the file if it doesn't exist yet.
+    if (!globalConfig) globalConfig = {};
 
     if (!globalConfig.hosts) globalConfig.hosts = {};
     if (!globalConfig.hosts.sillytavern) globalConfig.hosts.sillytavern = {};
 
     Object.assign(globalConfig.hosts.sillytavern, updates);
-    saveGlobalConfig();
-}
-
-/**
- * Register or update a session mapping in the global config.
- * Re-reads from disk first to avoid clobbering other tools' writes.
- */
-function registerSession(sessionId) {
-    refreshGlobalConfig();
-    if (!globalConfig) return;
-
-    if (!globalConfig.sessions) globalConfig.sessions = {};
-
-    // Use SillyTavern's data directory as the key
-    const stDir = process.cwd();
-    const existing = globalConfig.sessions[stDir];
-
-    // Only write if the session changed
-    if (existing !== sessionId) {
-        globalConfig.sessions[stDir] = sessionId;
-        saveGlobalConfig();
+    for (const key of deletes) {
+        delete globalConfig.hosts.sillytavern[key];
     }
+    saveGlobalConfig();
 }
 
 /**
@@ -206,9 +235,9 @@ function honchoMiddleware(req, res, next) {
         const manager = new SecretManager(req.user.directories);
         let apiKey = manager.readSecret(SECRET_KEYS.HONCHO);
 
-        // Fall back to global config API key
-        if (!apiKey && globalConfig?.apiKey) {
-            apiKey = globalConfig.apiKey;
+        // Fall back to host-scoped key, then root-level key
+        if (!apiKey) {
+            apiKey = globalConfig?.hosts?.sillytavern?.apiKey || globalConfig?.apiKey || null;
         }
 
         if (!apiKey) {
@@ -266,8 +295,9 @@ export async function init(router) {
 
     router.use(honchoMiddleware);
 
-    // GET /config — Return global config values for client-side auto-population
+    // GET /config — re-reads from disk each call so external edits propagate.
     router.get('/config', (req, res) => {
+        refreshGlobalConfig();
         const stConfig = getGlobalConfigForST();
         if (!stConfig) {
             return res.json({ found: false });
@@ -285,32 +315,35 @@ export async function init(router) {
             hasApiKey: !!(stConfig.apiKey || hasSecretKey),
             workspace: stConfig.workspace,
             peerName: stConfig.peerName,
+            peerNameOverride: globalConfig?.hosts?.sillytavern?.peerName || null,
             aiPeer: stConfig.aiPeer,
             enabled: stConfig.enabled,
         });
     });
 
-    // POST /config/update — Update hosts.sillytavern and session in global config
+    // POST /config/update — Update hosts.sillytavern in global config.
+    // updateSTHost bootstraps the config file if it doesn't exist yet.
     router.post('/config/update', (req, res) => {
-        if (!globalConfig) {
-            return res.status(404).json({ error: 'No global config found at ~/.honcho/config.json' });
-        }
-
-        const { aiPeer, workspace, sessionId } = req.body;
+        const { aiPeer, workspace, peerName } = req.body;
         const updates = {};
+        const deletes = [];
 
         if (aiPeer) updates.aiPeer = aiPeer;
-        if (workspace) updates.workspace = workspace;
-
-        if (Object.keys(updates).length > 0) {
-            updateSTHost(updates);
+        // workspace & peerName: empty string / null clears the override (falls back to root)
+        if (workspace !== undefined) {
+            if (workspace) updates.workspace = workspace;
+            else deletes.push('workspace');
+        }
+        if (peerName !== undefined) {
+            if (peerName) updates.peerName = peerName;
+            else deletes.push('peerName');
         }
 
-        if (sessionId) {
-            registerSession(sessionId);
+        if (Object.keys(updates).length > 0 || deletes.length > 0) {
+            updateSTHost(updates, deletes);
         }
 
-        return res.json({ ok: true, host: globalConfig.hosts?.sillytavern });
+        return res.json({ ok: true, host: globalConfig?.hosts?.sillytavern });
     });
 
     // POST /peer — Create or get a peer
@@ -373,12 +406,20 @@ export async function init(router) {
             const client = await getClient(req.honchoApiKey, req.honchoWorkspaceId);
             const session = await client.session(sessionId);
 
-            // Build MessageInput objects via peer.message()
+            // Build MessageInput objects via peer.message(). Long turns are
+            // chunked at paragraph/sentence boundaries so nothing is lost to
+            // the 25k-char cap; chunks stay under the same peer in order.
             const messageInputs = [];
             for (const msg of messages) {
                 if (!msg.peerId || !msg.content) continue;
                 const peer = await client.peer(msg.peerId);
-                messageInputs.push(peer.message(msg.content));
+                const chunks = chunkText(msg.content, MESSAGE_CHAR_LIMIT);
+                if (chunks.length > 1) {
+                    console.log(`[honcho-proxy] Chunking ${msg.peerId} message: ${msg.content.length} chars → ${chunks.length} parts`);
+                }
+                for (const chunk of chunks) {
+                    messageInputs.push(peer.message(chunk));
+                }
             }
 
             if (messageInputs.length === 0) {
@@ -408,7 +449,8 @@ export async function init(router) {
                 opts.session = sessionId;
             }
 
-            const response = await peer.chat(query, opts);
+            const safeQuery = truncate(query, QUERY_CHAR_LIMIT, `dialectic query for ${peerId}`);
+            const response = await peer.chat(safeQuery, opts);
             return res.json({ response: response || '' });
         } catch (err) {
             return sendError(res, err, 'chat');
@@ -433,10 +475,9 @@ export async function init(router) {
             if (typeof summary === 'boolean') {
                 opts.summary = summary;
             }
-            // SDK requires the pair: peerPerspective (observer) + peerTarget (subject).
-            // The SDK rejects client-side if either is missing when the other is provided.
+            // Both = userPeerId → user's global self-representation.
             opts.peerPerspective = userPeerId;
-            opts.peerTarget = charPeerId;
+            opts.peerTarget = userPeerId;
 
             const context = await session.context(opts);
 

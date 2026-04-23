@@ -12,8 +12,6 @@ import {
     characters,
     this_chid,
     chat,
-    setUserName,
-    name1,
 } from '../../../../script.js';
 import {
     extension_settings,
@@ -24,6 +22,7 @@ import {
 import { SECRET_KEYS, secret_state } from '../../../secrets.js';
 import { selected_group } from '../../../group-chats.js';
 import { oai_settings } from '../../../openai.js';
+import { callGenericPopup, POPUP_TYPE, POPUP_RESULT } from '../../../popup.js';
 
 const MODULE_NAME = 'honcho';
 const PLUGIN_BASE = '/api/plugins/honcho-proxy';
@@ -43,6 +42,8 @@ const defaultSettings = {
     contextTokens: 2000,
     contextInterval: 1,
     contextSummary: true,
+    ignoreGlobalConfig: false,
+    peerName: '',
 };
 
 let sessionSetupInProgress = false;
@@ -114,31 +115,176 @@ function settings() {
 /** Global config values fetched from ~/.honcho/config.json via the plugin */
 let globalConfigCache = null;
 
-/**
- * Resolve the user peer ID based on current peer mode.
- * Priority: globalConfig.peerName > persona name > display name
- */
+// Resolution: hosts.sillytavern.peerName > (local if ignoreGlobalConfig) >
+//             ST persona (non-default) > local > root.
 function getUserPeerId() {
     const context = getContext();
+    const override = globalConfigCache?.peerNameOverride || null;
+    const stPersona = context.name1 && context.name1 !== 'User' ? context.name1 : null;
+    const local = settings().peerName || null;
+    const root = globalConfigCache?.peerName || null;
+    const explicit = override
+        || (settings().ignoreGlobalConfig ? local : null)
+        || stPersona
+        || local
+        || root;
 
-    // Use global config peerName if available (e.g. "eri")
-    if (globalConfigCache?.peerName) {
+    if (explicit) {
         if (settings().peerMode === 'per_persona') {
             const personaName = context.name1 || 'default';
-            // Don't duplicate if persona name matches peerName
-            if (sanitizeId(personaName) === sanitizeId(globalConfigCache.peerName)) {
-                return sanitizeId(globalConfigCache.peerName);
+            if (sanitizeId(personaName) === sanitizeId(explicit)) {
+                return sanitizeId(explicit);
             }
-            return sanitizeId(`${globalConfigCache.peerName}-${personaName}`);
+            return sanitizeId(`${explicit}-${personaName}`);
         }
-        return sanitizeId(globalConfigCache.peerName);
+        return sanitizeId(explicit);
     }
 
-    // Fallback: use ST display name
     if (settings().peerMode === 'per_persona') {
         return sanitizeId(context.name1 || 'default-user');
     }
     return sanitizeId(context.name1 || 'user');
+}
+
+// Diff local vs ~/.honcho/config.json, prompt Inherit/Push/Cancel if diverged.
+async function resolveGlobalSync() {
+    let global = null;
+    let fetchOk = false;
+    try {
+        const resp = await fetch(`${PLUGIN_BASE}/config`, {
+            method: 'GET',
+            headers: getRequestHeaders(),
+        });
+        if (resp.ok) {
+            global = await resp.json();
+            fetchOk = true;
+        }
+    } catch { /* no-op */ }
+
+    // Network failure: don't mutate state or flip toggle.
+    if (!fetchOk) return { cancelled: true, global: null };
+    if (!global?.found) return { cancelled: false, global };
+
+    const s = settings();
+    const globalWs = global.workspace || '';
+    const globalPeer = global.peerNameOverride || global.peerName || '';
+    const localWs = s.workspaceId || '';
+    const localPeer = s.peerName || '';
+    // Empty local = no override declared; skip so Push can't accidentally delete the global key.
+    const diffs = [];
+    if (localWs && globalWs !== localWs) {
+        diffs.push({ field: 'workspace', global: globalWs, local: localWs });
+    }
+    if (localPeer && globalPeer !== localPeer) {
+        diffs.push({ field: 'peerName', global: globalPeer, local: localPeer });
+    }
+    if (diffs.length === 0) return { cancelled: false, global };
+
+    const action = await promptDiffResolution(diffs);
+    if (action === 'cancel') return { cancelled: true, global };
+
+    if (action === 'inherit') {
+        for (const d of diffs) {
+            if (d.field === 'workspace') s.workspaceId = d.global;
+            if (d.field === 'peerName') s.peerName = '';
+        }
+        saveSettingsDebounced();
+    } else if (action === 'push') {
+        const payload = {};
+        for (const d of diffs) {
+            if (!d.local) continue; // never push empty (plugin would delete the key)
+            if (d.field === 'workspace') payload.workspace = d.local;
+            if (d.field === 'peerName') payload.peerName = d.local;
+        }
+        try {
+            await fetch(`${PLUGIN_BASE}/config/update`, {
+                method: 'POST',
+                headers: getRequestHeaders(),
+                body: JSON.stringify(payload),
+            });
+            const refresh = await fetch(`${PLUGIN_BASE}/config`, {
+                method: 'GET',
+                headers: getRequestHeaders(),
+            });
+            if (refresh.ok) global = await refresh.json();
+        } catch { /* best-effort */ }
+    }
+    return { cancelled: false, global };
+}
+
+function promptDiffResolution(diffs) {
+    const $content = $('<div>');
+    $content.append($('<h3>').text('Sync with global config'));
+    $content.append($('<p>').text('Your local values differ from ~/.honcho/config.json. Choose which direction to sync:'));
+    const $table = $('<table style="margin: 0.8em auto; border-collapse: collapse; font-family: monospace; font-size: 0.9em;">');
+    const $thead = $('<thead>').append(
+        $('<tr>').append(
+            $('<th style="text-align: left; padding: 0.3em 1em; opacity: 0.7;">').text('Field'),
+            $('<th style="text-align: left; padding: 0.3em 1em; opacity: 0.7;">').text('Global'),
+            $('<th style="text-align: left; padding: 0.3em 1em; opacity: 0.7;">').text('Local'),
+        ),
+    );
+    const $tbody = $('<tbody>');
+    for (const d of diffs) {
+        $tbody.append(
+            $('<tr>').append(
+                $('<td style="padding: 0.2em 1em;">').text(d.field),
+                $('<td style="padding: 0.2em 1em;">').text(d.global || '(empty)'),
+                $('<td style="padding: 0.2em 1em;">').text(d.local || '(empty)'),
+            ),
+        );
+    }
+    $table.append($thead, $tbody);
+    $content.append($table);
+    $content.append($('<p style="font-size: 0.85em; opacity: 0.7; margin-top: 0.5em;">').html(
+        '<b>Inherit</b>: pull global values into this SillyTavern install.<br/>' +
+        '<b>Push local</b>: overwrite the global config with your local values.',
+    ));
+
+    return callGenericPopup($content[0], POPUP_TYPE.CONFIRM, '', {
+        okButton: 'Inherit (pull global)',
+        cancelButton: 'Cancel',
+        customButtons: [{ text: 'Push local to global', result: 2, classes: ['menu_button'] }],
+    }).then(result => {
+        if (result === POPUP_RESULT.AFFIRMATIVE) return 'inherit';
+        if (result === 2) return 'push';
+        return 'cancel';
+    });
+}
+
+// Write ST persona → hosts.sillytavern.peerName when no explicit override exists.
+let personaSyncInFlight = false;
+let personaSyncPending = false;
+async function syncSTPersonaToGlobal() {
+    if (personaSyncInFlight) { personaSyncPending = true; return; }
+    if (settings().ignoreGlobalConfig) return;
+    if (!globalConfigCache) return;
+    if (globalConfigCache.peerNameOverride) return;
+    const persona = (getContext().name1 || '').trim();
+    if (!persona || persona === 'User') return;
+    const prevOverride = globalConfigCache.peerNameOverride || '';
+    personaSyncInFlight = true;
+    try {
+        const resp = await fetch(`${PLUGIN_BASE}/config/update`, {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ peerName: persona }),
+        });
+        if (!resp.ok) return;
+        const fresh = await fetch(`${PLUGIN_BASE}/config`, {
+            method: 'GET',
+            headers: getRequestHeaders(),
+        });
+        if (fresh.ok) globalConfigCache = await fresh.json();
+        resetCaches();
+        // Only repaint the field if it still shows the pre-sync value (user hasn't edited it).
+        const $field = $('#honcho_peer_name');
+        if ($field.length && $field.val() === prevOverride) $field.val(persona);
+        console.log(`[Honcho] Synced ST persona → hosts.sillytavern.peerName: ${persona}`);
+    } catch { /* best-effort */ } finally {
+        personaSyncInFlight = false;
+        if (personaSyncPending) { personaSyncPending = false; syncSTPersonaToGlobal(); }
+    }
 }
 
 /**
@@ -293,28 +439,44 @@ async function onChatChanged() {
 
     resetCaches();
 
+    // Refresh globalConfigCache from disk so external-tool writes to
+    // ~/.honcho/config.json land before we freeze peer IDs into chat_metadata.
+    if (!settings().ignoreGlobalConfig) {
+        try {
+            const resp = await fetch(`${PLUGIN_BASE}/config`, {
+                method: 'GET',
+                headers: getRequestHeaders(),
+            });
+            if (resp.ok) globalConfigCache = await resp.json();
+        } catch { /* best-effort */ }
+    }
+
     const rawChatId = getCurrentChatId();
     if (!rawChatId) return;
 
-    // Build session ID based on naming mode
-    const charName = (this_chid !== undefined && characters[this_chid])
-        ? characters[this_chid].name
-        : 'chat';
+    // Session ID is assigned once on first open and frozen into chat_metadata —
+    // later naming-mode or character-name changes only affect NEW chats.
+    const existingId = chat_metadata?.honcho?.sessionId;
     let chatId;
-    const namingMode = settings().sessionNaming || 'auto';
-
-    if (namingMode === 'custom' && settings().customSessionName) {
-        chatId = sanitizeId(settings().customSessionName);
-    } else if (namingMode === 'character') {
-        chatId = sanitizeId(charName);
+    if (existingId) {
+        chatId = existingId;
     } else {
-        // auto: "charName-YYYY-MM-DD-hash" (one session per ST chat)
-        const dateMatch = rawChatId.match(/(\d{4}-\d{2}-\d{2})/);
-        const dateStr = dateMatch ? dateMatch[1] : new Date().toISOString().slice(0, 10);
-        const shortHash = Math.abs(
-            Array.from(rawChatId).reduce((h, c) => ((h << 5) - h + c.charCodeAt(0)) | 0, 0)
-        ).toString(36);
-        chatId = sanitizeId(`${charName}-${dateStr}-${shortHash}`);
+        const charName = (this_chid !== undefined && characters[this_chid])
+            ? characters[this_chid].name
+            : 'chat';
+        const namingMode = settings().sessionNaming || 'auto';
+        if (namingMode === 'custom' && settings().customSessionName) {
+            chatId = sanitizeId(settings().customSessionName);
+        } else if (namingMode === 'character') {
+            chatId = sanitizeId(charName);
+        } else {
+            const dateMatch = rawChatId.match(/(\d{4}-\d{2}-\d{2})/);
+            const dateStr = dateMatch ? dateMatch[1] : new Date().toISOString().slice(0, 10);
+            const shortHash = Math.abs(
+                Array.from(rawChatId).reduce((h, c) => ((h << 5) - h + c.charCodeAt(0)) | 0, 0),
+            ).toString(36);
+            chatId = sanitizeId(`${charName}-${dateStr}-${shortHash}`);
+        }
     }
 
     // Prevent race if CHAT_CHANGED fires while a setup is already running.
@@ -326,8 +488,10 @@ async function onChatChanged() {
     sessionSetupInProgress = true;
 
     try {
-        const userPeerId = getUserPeerId();
-        const charPeerId = getCharPeerId();
+        // Freeze peer IDs once assigned, same invariant as sessionId.
+        const existingMeta = chat_metadata?.honcho;
+        const userPeerId = existingMeta?.userPeerId || getUserPeerId();
+        const charPeerId = existingMeta?.charPeerId || getCharPeerId();
 
         // Ensure peers exist
         await honchoFetch('/peer', { peerId: userPeerId, observeMe: true });
@@ -351,14 +515,12 @@ async function onChatChanged() {
             saveMetadataDebounced();
             updateActiveSessionDisplay();
 
-            // Update global config with current aiPeer and session
             try {
                 await fetch(`${PLUGIN_BASE}/config/update`, {
                     method: 'POST',
                     headers: getRequestHeaders(),
                     body: JSON.stringify({
                         aiPeer: charPeerId,
-                        sessionId: chatId,
                         workspace: settings().workspaceId,
                     }),
                 });
@@ -738,18 +900,12 @@ function updateActiveSessionDisplay() {
     $('#honcho_active_session').val(meta?.sessionId || '');
 }
 
-/**
- * Sync SillyTavern's function_calling flag to match the current Tool Call
- * enrichment mode. Without this, ToolManager registers tools but ST's
- * chat-completion request omits the `tools` key entirely.
- *
- * Called from both the mode-change listener and at extension load so the flag
- * stays in lockstep with contextMode. NOTE: this mutates a global ST setting
- * — every tool-registering extension sees the change.
- */
+// Only ENABLE function_calling when entering tool_call mode — never disable.
+// Other extensions may depend on it, and ST has no per-extension isolation;
+// leaving the flag alone on exit is the non-hostile default.
 function syncFunctionCallingFlag() {
-    if (oai_settings && 'function_calling' in oai_settings) {
-        oai_settings.function_calling = (settings().contextMode === 'tool_call');
+    if (oai_settings && 'function_calling' in oai_settings && settings().contextMode === 'tool_call') {
+        oai_settings.function_calling = true;
     }
 }
 
@@ -763,7 +919,21 @@ function loadSettingsUI() {
         console.log('[Honcho] Migrated contextMode: prefetch → reasoning');
     }
     $('#honcho_enabled').prop('checked', s.enabled);
+    $('#honcho_ignore_global_btn').text(s.ignoreGlobalConfig ? 'Enable global config' : 'Disable global config');
     $('#honcho_workspace_id').val(s.workspaceId);
+    // Prefill from the explicit override only — never from the resolved value
+    // (which could be inherited root peerName). Otherwise a blur would write
+    // that inherited value back as a sticky host override.
+    $('#honcho_peer_name').val(
+        s.ignoreGlobalConfig
+            ? (s.peerName || '')
+            : (globalConfigCache?.peerNameOverride || ''),
+    );
+    $('#honcho_peer_name_hint').text(
+        s.ignoreGlobalConfig
+            ? 'Applies to new chats. Saved locally to this SillyTavern install.'
+            : 'Applies to new chats. Saved to ~/.honcho/config.json under hosts.sillytavern.'
+    );
     $(`input[name="honcho_peer_mode"][value="${s.peerMode}"]`).prop('checked', true);
     $(`input[name="honcho_session_naming"][value="${s.sessionNaming || 'auto'}"]`).prop('checked', true);
     $('#honcho_custom_session').val(s.customSessionName || '');
@@ -778,8 +948,7 @@ function loadSettingsUI() {
     $('#honcho_context_interval').val(s.contextInterval || 1);
     $('#honcho_context_summary').prop('checked', s.contextSummary);
 
-    // Show global config source info
-    if (globalConfigCache?.found) {
+    if (!s.ignoreGlobalConfig && globalConfigCache?.found) {
         const source = [];
         if (globalConfigCache.hasApiKey && !secret_state[SECRET_KEYS.HONCHO]) {
             source.push('API key');
@@ -787,11 +956,10 @@ function loadSettingsUI() {
         if (globalConfigCache.workspace && s.workspaceId === globalConfigCache.workspace) {
             source.push('workspace');
         }
-        if (globalConfigCache.peerName) {
-            source.push(`peer: ${globalConfigCache.peerName}`);
-        }
         if (source.length > 0) {
             $('#honcho_config_source').text(`~/.honcho/config.json (${source.join(', ')})`).show();
+        } else {
+            $('#honcho_config_source').hide();
         }
     } else {
         $('#honcho_config_source').hide();
@@ -818,11 +986,163 @@ function bindSettingsListeners() {
         }
     });
 
-    $('#honcho_workspace_id').on('input', function () {
-        settings().workspaceId = $(this).val().trim();
+    // Sequence counters drop stale in-flight saves.
+    const makeFlashHint = (selector, getBaseText) => {
+        let timer = null;
+        return (msg, isError = false) => {
+            clearTimeout(timer);
+            const $hint = $(selector);
+            $hint.text(msg).css('opacity', isError ? '1' : '0.9').toggleClass('honcho_hint_error', !!isError);
+            timer = setTimeout(() => {
+                $hint.text(getBaseText()).css('opacity', '0.6').removeClass('honcho_hint_error');
+            }, 1800);
+        };
+    };
+    const flashWorkspaceHint = makeFlashHint('#honcho_workspace_id_hint', () =>
+        settings().ignoreGlobalConfig
+            ? 'Saved locally to this SillyTavern install.'
+            : 'Saved to ~/.honcho/config.json under hosts.sillytavern.',
+    );
+    let workspaceSaveTimer = null;
+    let workspaceSaveSeq = 0;
+    const saveWorkspace = async () => {
+        const seq = ++workspaceSaveSeq;
+        const value = $('#honcho_workspace_id').val().trim();
+        settings().workspaceId = value;
         resetCaches();
         saveSettingsDebounced();
         updateStatusIndicator();
+        if (settings().ignoreGlobalConfig) {
+            flashWorkspaceHint(value ? `Saved locally — workspace: ${value}` : 'Local workspace cleared.');
+            return;
+        }
+        try {
+            const resp = await fetch(`${PLUGIN_BASE}/config/update`, {
+                method: 'POST',
+                headers: getRequestHeaders(),
+                body: JSON.stringify({ workspace: value }),
+            });
+            if (seq !== workspaceSaveSeq) return;
+            if (!resp.ok) {
+                flashWorkspaceHint(`Save failed (${resp.status})`, true);
+                return;
+            }
+            const fresh = await fetch(`${PLUGIN_BASE}/config`, {
+                method: 'GET',
+                headers: getRequestHeaders(),
+            });
+            if (seq !== workspaceSaveSeq || !fresh.ok) return;
+            globalConfigCache = await fresh.json();
+            flashWorkspaceHint(value ? `Saved — workspace: ${value}` : 'Override cleared. Using root workspace.');
+        } catch (err) {
+            if (seq !== workspaceSaveSeq) return;
+            flashWorkspaceHint(`Save failed: ${err.message}`, true);
+        }
+    };
+    $('#honcho_workspace_id').on('input', function () {
+        clearTimeout(workspaceSaveTimer);
+        workspaceSaveTimer = setTimeout(saveWorkspace, 500);
+    });
+    $('#honcho_workspace_id').on('change', function () {
+        clearTimeout(workspaceSaveTimer);
+        saveWorkspace();
+    });
+
+    // Save peer name: global on → hosts.sillytavern.peerName, off → local settings. Empty clears.
+    let peerNameSaveTimer = null;
+    const flashPeerHint = makeFlashHint('#honcho_peer_name_hint', () =>
+        settings().ignoreGlobalConfig
+            ? 'Applies to new chats. Saved locally to this SillyTavern install.'
+            : 'Applies to new chats. Saved to ~/.honcho/config.json under hosts.sillytavern.',
+    );
+    let peerNameSaveSeq = 0;
+    const savePeerName = async () => {
+        const seq = ++peerNameSaveSeq;
+        const value = $('#honcho_peer_name').val().trim();
+        if (settings().ignoreGlobalConfig) {
+            settings().peerName = value;
+            saveSettingsDebounced();
+            resetCaches();
+            flashPeerHint(value ? `Saved locally — peer: ${value}` : 'Local peer name cleared.');
+            return;
+        }
+        try {
+            const resp = await fetch(`${PLUGIN_BASE}/config/update`, {
+                method: 'POST',
+                headers: getRequestHeaders(),
+                body: JSON.stringify({ peerName: value }),
+            });
+            if (seq !== peerNameSaveSeq) return;
+            if (!resp.ok) {
+                flashPeerHint(`Save failed (${resp.status})`, true);
+                return;
+            }
+            const fresh = await fetch(`${PLUGIN_BASE}/config`, {
+                method: 'GET',
+                headers: getRequestHeaders(),
+            });
+            if (seq !== peerNameSaveSeq) return;
+            if (fresh.ok) {
+                globalConfigCache = await fresh.json();
+            }
+            resetCaches();
+            flashPeerHint(value ? `Saved — peer: ${value}` : 'Override cleared. Using root peerName.');
+        } catch (err) {
+            if (seq !== peerNameSaveSeq) return;
+            flashPeerHint(`Save failed: ${err.message}`, true);
+        }
+    };
+    $('#honcho_peer_name').on('input', function () {
+        clearTimeout(peerNameSaveTimer);
+        peerNameSaveTimer = setTimeout(savePeerName, 500);
+    });
+    $('#honcho_peer_name').on('change', function () {
+        clearTimeout(peerNameSaveTimer);
+        savePeerName();
+    });
+
+    $('#honcho_reset_session').on('click', async function () {
+        const meta = chat_metadata?.honcho;
+        const oldId = meta?.sessionId;
+        if (!oldId) return;
+        const $content = $('<div>');
+        $content.append($('<p>').text('Start a new Honcho session for this chat?'));
+        $content.append(
+            $('<p>').append(
+                'Messages already in ',
+                $('<code>').text(oldId),
+                " stay there but will no longer be linked to this chat. A fresh session will be created based on your current Session Naming mode on the next message.",
+            ),
+        );
+        const confirmed = await callGenericPopup(
+            $content[0],
+            POPUP_TYPE.CONFIRM,
+            '',
+            { okButton: 'Start new session', cancelButton: 'Cancel' },
+        );
+        if (confirmed !== POPUP_RESULT.AFFIRMATIVE) return;
+        updateChatMetadata({ honcho: null });
+        saveMetadataDebounced();
+        resetCaches();
+        await onChatChanged();
+        updateActiveSessionDisplay();
+    });
+
+    $('#honcho_ignore_global_btn').on('click', async function () {
+        const wasIgnoring = !!settings().ignoreGlobalConfig;
+
+        if (wasIgnoring) {
+            const result = await resolveGlobalSync();
+            if (result.cancelled) return;
+            globalConfigCache = result.global;
+        } else {
+            globalConfigCache = null;
+        }
+
+        settings().ignoreGlobalConfig = !wasIgnoring;
+        saveSettingsDebounced();
+        resetCaches();
+        loadSettingsUI();
     });
 
     $('input[name="honcho_peer_mode"]').on('change', function () {
@@ -840,37 +1160,6 @@ function bindSettingsListeners() {
     $('#honcho_custom_session').on('input', function () {
         settings().customSessionName = $(this).val().trim();
         saveSettingsDebounced();
-    });
-
-    // Renaming the active session re-registers it with Honcho
-    $('#honcho_active_session').on('change', async function () {
-        const newName = sanitizeId($(this).val().trim());
-        if (!newName) return;
-        $(this).val(newName);
-
-        const meta = chat_metadata?.honcho;
-        if (!meta) return;
-
-        meta.sessionId = newName;
-        updateChatMetadata({ honcho: meta });
-        saveMetadataDebounced();
-
-        // Re-register session with new name
-        try {
-            await honchoFetch('/session', {
-                sessionId: newName,
-                userPeerId: meta.userPeerId,
-                charPeerId: meta.charPeerId,
-            });
-            // Update global config
-            await fetch(`${PLUGIN_BASE}/config/update`, {
-                method: 'POST',
-                headers: getRequestHeaders(),
-                body: JSON.stringify({ sessionId: newName }),
-            });
-        } catch (err) {
-            console.error('[Honcho] Session rename error:', err);
-        }
     });
 
     $('input[name="honcho_context_mode"]').on('change', function () {
@@ -925,6 +1214,10 @@ function bindSettingsListeners() {
     // React to API key changes
     eventSource.on(event_types.SECRET_WRITTEN, () => updateStatusIndicator());
     eventSource.on(event_types.SECRET_DELETED, () => updateStatusIndicator());
+
+    if (event_types.PERSONA_CREATED) eventSource.on(event_types.PERSONA_CREATED, syncSTPersonaToGlobal);
+    if (event_types.PERSONA_RENAMED) eventSource.on(event_types.PERSONA_RENAMED, syncSTPersonaToGlobal);
+    if (event_types.PERSONA_CHANGED) eventSource.on(event_types.PERSONA_CHANGED, syncSTPersonaToGlobal);
 }
 
 // ─── Init ─────────────────────────────────────────────────
@@ -936,37 +1229,29 @@ jQuery(async () => {
     }
     extension_settings.honcho = Object.assign({}, defaultSettings, extension_settings.honcho);
 
-    // Try to auto-populate from global ~/.honcho/config.json
-    try {
+    // Auto-populate from ~/.honcho/config.json unless opted out.
+    if (!extension_settings.honcho?.ignoreGlobalConfig) try {
         const configResp = await fetch(`${PLUGIN_BASE}/config`, {
             method: 'GET',
             headers: getRequestHeaders(),
         });
         if (configResp.ok) {
-            const globalConfig = await configResp.json();
-            if (globalConfig.found) {
-                // Cache for peer ID resolution
-                globalConfigCache = globalConfig;
-
+            // Cache regardless of found — syncSTPersonaToGlobal uses the
+            // response shape to decide whether bootstrapping is needed.
+            globalConfigCache = await configResp.json();
+            if (globalConfigCache.found) {
                 let changed = false;
 
-                // Auto-populate workspace if not set
-                if (!settings().workspaceId && globalConfig.workspace) {
-                    settings().workspaceId = globalConfig.workspace;
+                if (!settings().workspaceId && globalConfigCache.workspace) {
+                    settings().workspaceId = globalConfigCache.workspace;
                     changed = true;
-                    console.log(`[Honcho] Auto-populated workspace from global config: ${globalConfig.workspace}`);
+                    console.log(`[Honcho] Auto-populated workspace from global config: ${globalConfigCache.workspace}`);
                 }
 
-                // Auto-enable if global config says enabled and not yet configured
-                if (globalConfig.enabled && !settings().enabled && globalConfig.hasApiKey) {
+                if (globalConfigCache.enabled && !settings().enabled && globalConfigCache.hasApiKey) {
                     settings().enabled = true;
                     changed = true;
                     console.log('[Honcho] Auto-enabled from global config');
-                }
-
-                // Sync ST persona name with Honcho peerName (only if still at default)
-                if (globalConfig.peerName && (!name1 || name1 === 'User')) {
-                    setUserName(globalConfig.peerName, { toastPersonaNameChange: false });
                 }
 
                 if (changed) {
@@ -985,7 +1270,8 @@ jQuery(async () => {
     loadSettingsUI();
     bindSettingsListeners();
 
-    // Register function tools for tool_call mode
+    syncSTPersonaToGlobal();
+
     registerHonchoTools();
 
     // Subscribe to events
