@@ -468,9 +468,7 @@ export async function init(router) {
             if (typeof summary === 'boolean') {
                 opts.summary = summary;
             }
-            // Both peerPerspective and peerTarget are the user peer: we want
-            // the user's global representation (what Honcho knows about the user),
-            // not what the user thinks about the character.
+            // Both = userPeerId → user's global self-representation.
             opts.peerPerspective = userPeerId;
             opts.peerTarget = userPeerId;
 
