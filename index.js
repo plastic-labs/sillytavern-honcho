@@ -135,15 +135,13 @@ function getUserPeerId() {
         return sanitizeId(explicit);
     }
 
-    // Fallback: use ST display name (catches name1 === 'User')
     if (settings().peerMode === 'per_persona') {
         return sanitizeId(context.name1 || 'default-user');
     }
     return sanitizeId(context.name1 || 'user');
 }
 
-// Fetch global config, diff against local, prompt Inherit/Push/Cancel if diverged.
-// Shared by Enable and Refresh so both behave identically.
+// Diff local vs ~/.honcho/config.json, prompt Inherit/Push/Cancel if diverged.
 async function resolveGlobalSync() {
     let global = null;
     try {
@@ -161,8 +159,8 @@ async function resolveGlobalSync() {
     const globalPeer = global.peerNameOverride || global.peerName || '';
     const localWs = s.workspaceId || '';
     const localPeer = s.peerName || '';
+    // Empty local = no override declared; skip so Push can't accidentally delete the global key.
     const diffs = [];
-    // Only flag a diff when local is non-empty (empty = "no override declared").
     if (localWs && globalWs !== localWs) {
         diffs.push({ field: 'workspace', global: globalWs, local: localWs });
     }
@@ -203,7 +201,6 @@ async function resolveGlobalSync() {
     return { cancelled: false, global };
 }
 
-// Themed diff dialog for the re-enable flow.
 function promptDiffResolution(diffs) {
     const $content = $('<div>');
     $content.append($('<h3>').text('Sync with global config'));
@@ -915,7 +912,6 @@ function loadSettingsUI() {
     $('#honcho_context_interval').val(s.contextInterval || 1);
     $('#honcho_context_summary').prop('checked', s.contextSummary);
 
-    // Source line + refresh button only meaningful when detection is on
     if (!s.ignoreGlobalConfig && globalConfigCache?.found) {
         const source = [];
         if (globalConfigCache.hasApiKey && !secret_state[SECRET_KEYS.HONCHO]) {
@@ -988,10 +984,7 @@ function bindSettingsListeners() {
         saveWorkspace();
     });
 
-    // Peer-name save:
-    //   detection on  → writes to hosts.sillytavern.peerName in ~/.honcho/config.json
-    //   detection off → writes to extension_settings.honcho.peerName (local to this ST install)
-    // Empty value clears the stored peer name in whichever store is active.
+    // Save peer name: global on → hosts.sillytavern.peerName, off → local settings. Empty clears.
     let peerNameSaveTimer = null;
     let peerNameHintTimer = null;
     const flashPeerHint = (msg, isError = false) => {
@@ -1024,7 +1017,6 @@ function bindSettingsListeners() {
                 flashPeerHint(`Save failed (${resp.status})`, true);
                 return;
             }
-            // Refresh cache so getUserPeerId() reflects the new value immediately
             const fresh = await fetch(`${PLUGIN_BASE}/config`, {
                 method: 'GET',
                 headers: getRequestHeaders(),
@@ -1179,8 +1171,7 @@ jQuery(async () => {
     }
     extension_settings.honcho = Object.assign({}, defaultSettings, extension_settings.honcho);
 
-    // Try to auto-populate from global ~/.honcho/config.json
-    // (skipped when user has opted out via Ignore checkbox)
+    // Auto-populate from ~/.honcho/config.json unless opted out.
     try {
         if (extension_settings.honcho?.ignoreGlobalConfig) {
             throw new Error('ignored');

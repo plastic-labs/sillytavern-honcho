@@ -269,9 +269,7 @@ export async function init(router) {
 
     router.use(honchoMiddleware);
 
-    // GET /config — Return global config values for client-side auto-population.
-    // Always re-reads from disk so the UI refresh button picks up changes made
-    // by other tools (claude-code, cursor, hermes, etc.).
+    // GET /config — re-reads from disk each call so external edits propagate.
     router.get('/config', (req, res) => {
         refreshGlobalConfig();
         const stConfig = getGlobalConfigForST();
