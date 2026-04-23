@@ -759,20 +759,25 @@ async function onCharResponse(messageIndex) {
     // Skip swiped-away messages (only store if this is the latest message)
     if (messageIndex !== chat.length - 1) return;
 
-    // Groups: attribute the message to whichever character produced it; lazy-add
-    // the peer to the session if it wasn't known at setup (e.g. joined mid-chat).
+    // Groups: lazy-add the responding character's peer to the session if not
+    // seen at setup. Only persist to metadata if BOTH /peer and /session/add-peers
+    // succeed, so a transient failure can be retried on the next message.
     const peerId = getPeerIdForMessage(message);
     if (selected_group) {
         const known = honchoMeta.charPeerIds || [];
         if (!known.includes(peerId)) {
-            await honchoFetch('/peer', { peerId, observeMe: false });
-            await honchoFetch('/session/add-peers', {
-                sessionId: honchoMeta.sessionId,
-                peerIds: [peerId],
-            });
-            honchoMeta.charPeerIds = [...known, peerId];
-            updateChatMetadata({ honcho: honchoMeta });
-            saveMetadataDebounced();
+            const created = await honchoFetch('/peer', { peerId, observeMe: false });
+            if (created) {
+                const added = await honchoFetch('/session/add-peers', {
+                    sessionId: honchoMeta.sessionId,
+                    peerIds: [peerId],
+                });
+                if (added) {
+                    honchoMeta.charPeerIds = [...known, peerId];
+                    updateChatMetadata({ honcho: honchoMeta });
+                    saveMetadataDebounced();
+                }
+            }
         }
     }
 
