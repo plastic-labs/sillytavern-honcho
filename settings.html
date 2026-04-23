@@ -84,10 +84,10 @@
                     <input id="honcho_custom_session" type="text" class="text_pole" placeholder="e.g. my-session-name" />
                 </div>
 
-                <!-- Current session (editable to rename) -->
+                <!-- Current session (read-only; derived from Session Naming mode) -->
                 <div id="honcho_active_session_section" class="honcho_section">
                     <label>Active session</label>
-                    <input id="honcho_active_session" type="text" class="text_pole" placeholder="No active session" />
+                    <input id="honcho_active_session" type="text" class="text_pole" placeholder="No active session" readonly title="Session ID is derived from Session Naming mode above. Editing would create a new Honcho session and orphan the current history." />
                 </div>
 
                 <hr />

@@ -434,25 +434,29 @@ async function onChatChanged() {
     const rawChatId = getCurrentChatId();
     if (!rawChatId) return;
 
-    // Build session ID based on naming mode
-    const charName = (this_chid !== undefined && characters[this_chid])
-        ? characters[this_chid].name
-        : 'chat';
+    // Session ID is assigned once on first open and frozen into chat_metadata —
+    // later naming-mode or character-name changes only affect NEW chats.
+    const existingId = chat_metadata?.honcho?.sessionId;
     let chatId;
-    const namingMode = settings().sessionNaming || 'auto';
-
-    if (namingMode === 'custom' && settings().customSessionName) {
-        chatId = sanitizeId(settings().customSessionName);
-    } else if (namingMode === 'character') {
-        chatId = sanitizeId(charName);
+    if (existingId) {
+        chatId = existingId;
     } else {
-        // auto: "charName-YYYY-MM-DD-hash" (one session per ST chat)
-        const dateMatch = rawChatId.match(/(\d{4}-\d{2}-\d{2})/);
-        const dateStr = dateMatch ? dateMatch[1] : new Date().toISOString().slice(0, 10);
-        const shortHash = Math.abs(
-            Array.from(rawChatId).reduce((h, c) => ((h << 5) - h + c.charCodeAt(0)) | 0, 0)
-        ).toString(36);
-        chatId = sanitizeId(`${charName}-${dateStr}-${shortHash}`);
+        const charName = (this_chid !== undefined && characters[this_chid])
+            ? characters[this_chid].name
+            : 'chat';
+        const namingMode = settings().sessionNaming || 'auto';
+        if (namingMode === 'custom' && settings().customSessionName) {
+            chatId = sanitizeId(settings().customSessionName);
+        } else if (namingMode === 'character') {
+            chatId = sanitizeId(charName);
+        } else {
+            const dateMatch = rawChatId.match(/(\d{4}-\d{2}-\d{2})/);
+            const dateStr = dateMatch ? dateMatch[1] : new Date().toISOString().slice(0, 10);
+            const shortHash = Math.abs(
+                Array.from(rawChatId).reduce((h, c) => ((h << 5) - h + c.charCodeAt(0)) | 0, 0),
+            ).toString(36);
+            chatId = sanitizeId(`${charName}-${dateStr}-${shortHash}`);
+        }
     }
 
     // Prevent race if CHAT_CHANGED fires while a setup is already running.
@@ -1088,49 +1092,6 @@ function bindSettingsListeners() {
     $('#honcho_custom_session').on('input', function () {
         settings().customSessionName = $(this).val().trim();
         saveSettingsDebounced();
-    });
-
-    // Editing session ID doesn't rename — it switches the chat's pointer
-    // to a different Honcho session. Old messages stay in the old session.
-    $('#honcho_active_session').on('change', async function () {
-        const $field = $(this);
-        const newName = sanitizeId($field.val().trim());
-        const meta = chat_metadata?.honcho;
-        if (!meta) return;
-        const oldName = meta.sessionId;
-        if (!newName || newName === oldName) {
-            $field.val(oldName || '');
-            return;
-        }
-        $field.val(newName);
-
-        const confirmed = await callGenericPopup(
-            `Switch this chat to session <code>${newName}</code>?<br/><br/>` +
-            `Messages already in <code>${oldName}</code> stay there — this chat ` +
-            `won't be linked to them anymore. If <code>${newName}</code> already ` +
-            `exists, its history takes over.`,
-            POPUP_TYPE.CONFIRM,
-            '',
-            { okButton: 'Switch', cancelButton: 'Cancel' },
-        );
-        if (confirmed !== POPUP_RESULT.AFFIRMATIVE) {
-            $field.val(oldName || '');
-            return;
-        }
-
-        meta.sessionId = newName;
-        updateChatMetadata({ honcho: meta });
-        saveMetadataDebounced();
-
-        try {
-            await honchoFetch('/session', {
-                sessionId: newName,
-                userPeerId: meta.userPeerId,
-                charPeerId: meta.charPeerId,
-            });
-        } catch (err) {
-            console.error('[Honcho] Session switch error:', err);
-        }
     });
 
     $('input[name="honcho_context_mode"]').on('change', function () {
