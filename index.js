@@ -255,7 +255,7 @@ function promptDiffResolution(diffs) {
 // Write ST persona → hosts.sillytavern.peerName when no explicit override exists.
 async function syncSTPersonaToGlobal() {
     if (settings().ignoreGlobalConfig) return;
-    if (!globalConfigCache?.found) return;
+    if (!globalConfigCache) return; // fetch failed; can't tell current state
     if (globalConfigCache.peerNameOverride) return; // respect explicit panel override
     const persona = (getContext().name1 || '').trim();
     if (!persona || persona === 'User') return;
@@ -1214,22 +1214,19 @@ jQuery(async () => {
             headers: getRequestHeaders(),
         });
         if (configResp.ok) {
-            const globalConfig = await configResp.json();
-            if (globalConfig.found) {
-                // Cache for peer ID resolution
-                globalConfigCache = globalConfig;
-
+            // Cache regardless of found — syncSTPersonaToGlobal uses the
+            // response shape to decide whether bootstrapping is needed.
+            globalConfigCache = await configResp.json();
+            if (globalConfigCache.found) {
                 let changed = false;
 
-                // Auto-populate workspace if not set
-                if (!settings().workspaceId && globalConfig.workspace) {
-                    settings().workspaceId = globalConfig.workspace;
+                if (!settings().workspaceId && globalConfigCache.workspace) {
+                    settings().workspaceId = globalConfigCache.workspace;
                     changed = true;
-                    console.log(`[Honcho] Auto-populated workspace from global config: ${globalConfig.workspace}`);
+                    console.log(`[Honcho] Auto-populated workspace from global config: ${globalConfigCache.workspace}`);
                 }
 
-                // Auto-enable if global config says enabled and not yet configured
-                if (globalConfig.enabled && !settings().enabled && globalConfig.hasApiKey) {
+                if (globalConfigCache.enabled && !settings().enabled && globalConfigCache.hasApiKey) {
                     settings().enabled = true;
                     changed = true;
                     console.log('[Honcho] Auto-enabled from global config');

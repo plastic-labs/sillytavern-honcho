@@ -103,7 +103,8 @@ function saveGlobalConfig() {
  */
 function updateSTHost(updates, deletes = []) {
     refreshGlobalConfig();
-    if (!globalConfig) return;
+    // First-write bootstrap: create the file if it doesn't exist yet.
+    if (!globalConfig) globalConfig = {};
 
     if (!globalConfig.hosts) globalConfig.hosts = {};
     if (!globalConfig.hosts.sillytavern) globalConfig.hosts.sillytavern = {};
@@ -306,12 +307,9 @@ export async function init(router) {
         });
     });
 
-    // POST /config/update — Update hosts.sillytavern and session in global config
+    // POST /config/update — Update hosts.sillytavern and session in global config.
+    // updateSTHost bootstraps the config file if it doesn't exist yet.
     router.post('/config/update', (req, res) => {
-        if (!globalConfig) {
-            return res.status(404).json({ error: 'No global config found at ~/.honcho/config.json' });
-        }
-
         const { aiPeer, workspace, sessionId, peerName } = req.body;
         const updates = {};
         const deletes = [];
