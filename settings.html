@@ -39,7 +39,7 @@
                 <!-- Peer Name (your Honcho peer ID) -->
                 <div id="honcho_peer_name_section" class="honcho_section">
                     <label for="honcho_peer_name">Your peer name</label>
-                    <input id="honcho_peer_name" type="text" class="text_pole" placeholder="e.g. eri" pattern="[A-Za-z0-9_-]+" title="Letters, digits, underscore, hyphen." />
+                    <input id="honcho_peer_name" type="text" class="text_pole" placeholder="e.g. eri" pattern="^[A-Za-z0-9_-]+$" title="Use only letters, digits, underscore (_), or hyphen (-)." autocomplete="off" spellcheck="false" />
                     <span id="honcho_peer_name_hint" class="honcho_field_hint" style="font-size: 0.8em; opacity: 0.6;">Applies to new chats. Saved to ~/.honcho/config.json under hosts.sillytavern.</span>
                 </div>
 
