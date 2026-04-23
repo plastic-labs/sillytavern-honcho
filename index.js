@@ -159,12 +159,15 @@ async function resolveGlobalSync() {
     const s = settings();
     const globalWs = global.workspace || '';
     const globalPeer = global.peerNameOverride || global.peerName || '';
+    const localWs = s.workspaceId || '';
+    const localPeer = s.peerName || '';
     const diffs = [];
-    if (globalWs !== (s.workspaceId || '')) {
-        diffs.push({ field: 'workspace', global: globalWs, local: s.workspaceId || '' });
+    // Only flag a diff when local is non-empty (empty = "no override declared").
+    if (localWs && globalWs !== localWs) {
+        diffs.push({ field: 'workspace', global: globalWs, local: localWs });
     }
-    if (globalPeer !== (s.peerName || '')) {
-        diffs.push({ field: 'peerName', global: globalPeer, local: s.peerName || '' });
+    if (localPeer && globalPeer !== localPeer) {
+        diffs.push({ field: 'peerName', global: globalPeer, local: localPeer });
     }
     if (diffs.length === 0) return { cancelled: false, global };
 
@@ -180,6 +183,7 @@ async function resolveGlobalSync() {
     } else if (action === 'push') {
         const payload = {};
         for (const d of diffs) {
+            if (!d.local) continue; // never push empty (plugin would delete the key)
             if (d.field === 'workspace') payload.workspace = d.local;
             if (d.field === 'peerName') payload.peerName = d.local;
         }
