@@ -117,27 +117,6 @@ function updateSTHost(updates, deletes = []) {
 }
 
 /**
- * Register or update a session mapping in the global config.
- * Re-reads from disk first to avoid clobbering other tools' writes.
- */
-function registerSession(sessionId) {
-    refreshGlobalConfig();
-    if (!globalConfig) return;
-
-    if (!globalConfig.sessions) globalConfig.sessions = {};
-
-    // Use SillyTavern's data directory as the key
-    const stDir = process.cwd();
-    const existing = globalConfig.sessions[stDir];
-
-    // Only write if the session changed
-    if (existing !== sessionId) {
-        globalConfig.sessions[stDir] = sessionId;
-        saveGlobalConfig();
-    }
-}
-
-/**
  * @param {string} apiKey
  * @param {string} workspaceId
  * @returns {Promise<import('@honcho-ai/sdk').Honcho>}
@@ -307,10 +286,10 @@ export async function init(router) {
         });
     });
 
-    // POST /config/update — Update hosts.sillytavern and session in global config.
+    // POST /config/update — Update hosts.sillytavern in global config.
     // updateSTHost bootstraps the config file if it doesn't exist yet.
     router.post('/config/update', (req, res) => {
-        const { aiPeer, workspace, sessionId, peerName } = req.body;
+        const { aiPeer, workspace, peerName } = req.body;
         const updates = {};
         const deletes = [];
 
@@ -329,11 +308,7 @@ export async function init(router) {
             updateSTHost(updates, deletes);
         }
 
-        if (sessionId) {
-            registerSession(sessionId);
-        }
-
-        return res.json({ ok: true, host: globalConfig.hosts?.sillytavern });
+        return res.json({ ok: true, host: globalConfig?.hosts?.sillytavern });
     });
 
     // POST /peer — Create or get a peer

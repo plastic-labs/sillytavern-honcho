@@ -489,14 +489,12 @@ async function onChatChanged() {
             saveMetadataDebounced();
             updateActiveSessionDisplay();
 
-            // Update global config with current aiPeer and session
             try {
                 await fetch(`${PLUGIN_BASE}/config/update`, {
                     method: 'POST',
                     headers: getRequestHeaders(),
                     body: JSON.stringify({
                         aiPeer: charPeerId,
-                        sessionId: chatId,
                         workspace: settings().workspaceId,
                     }),
                 });
@@ -1130,13 +1128,8 @@ function bindSettingsListeners() {
                 userPeerId: meta.userPeerId,
                 charPeerId: meta.charPeerId,
             });
-            await fetch(`${PLUGIN_BASE}/config/update`, {
-                method: 'POST',
-                headers: getRequestHeaders(),
-                body: JSON.stringify({ sessionId: newName }),
-            });
         } catch (err) {
-            console.error('[Honcho] Session rename error:', err);
+            console.error('[Honcho] Session switch error:', err);
         }
     });
 
