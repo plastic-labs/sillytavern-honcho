@@ -17,7 +17,16 @@
                 <!-- Status indicator -->
                 <span id="honcho_status" class="honcho_status not-ready">Not configured</span>
                 <br />
-                <span id="honcho_config_source" class="honcho_config_source" style="display:none; font-size: 0.85em; opacity: 0.6;"></span>
+                <span class="honcho_config_source_row" style="display: inline-flex; align-items: center; gap: 0.5em;">
+                    <span id="honcho_config_source" class="honcho_config_source" style="display:none; font-size: 0.85em; opacity: 0.6;"></span>
+                    <button type="button" id="honcho_config_refresh" class="menu_button" title="Re-read ~/.honcho/config.json from disk" style="display: none; padding: 2px 6px; font-size: 0.75em;">
+                        <i class="fa-solid fa-rotate"></i> Refresh
+                    </button>
+                </span>
+                <label class="checkbox_label" for="honcho_ignore_global" style="margin-top: 0.3em; font-size: 0.85em; opacity: 0.8;">
+                    <input type="checkbox" id="honcho_ignore_global" />
+                    <span>Ignore ~/.honcho/config.json</span>
+                </label>
 
                 <hr />
 
@@ -32,9 +41,11 @@
                 <input id="honcho_workspace_id" type="text" class="text_pole" placeholder="Enter your Honcho workspace ID" />
 
                 <!-- Peer Name (your Honcho peer ID) -->
-                <label for="honcho_peer_name">Your peer name</label>
-                <input id="honcho_peer_name" type="text" class="text_pole" placeholder="e.g. eri" />
-                <span id="honcho_peer_name_hint" class="honcho_field_hint" style="font-size: 0.8em; opacity: 0.6;">Applies to new chats. Saved to ~/.honcho/config.json under hosts.sillytavern.</span>
+                <div id="honcho_peer_name_section" class="honcho_section">
+                    <label for="honcho_peer_name">Your peer name</label>
+                    <input id="honcho_peer_name" type="text" class="text_pole" placeholder="e.g. eri" />
+                    <span id="honcho_peer_name_hint" class="honcho_field_hint" style="font-size: 0.8em; opacity: 0.6;">Applies to new chats. Saved to ~/.honcho/config.json under hosts.sillytavern.</span>
+                </div>
 
                 <hr />
 

@@ -29,6 +29,10 @@
     color: var(--SmartThemeEmColor);
 }
 
+#honcho_settings .honcho_hint_error {
+    color: var(--warning);
+}
+
 #honcho_prefetch_queries {
     field-sizing: content;
     max-height: 30dvh;

@@ -41,6 +41,7 @@ const defaultSettings = {
     contextTokens: 2000,
     contextInterval: 1,
     contextSummary: true,
+    ignoreGlobalConfig: false,
 };
 
 let sessionSetupInProgress = false;
@@ -761,6 +762,7 @@ function loadSettingsUI() {
         console.log('[Honcho] Migrated contextMode: prefetch → reasoning');
     }
     $('#honcho_enabled').prop('checked', s.enabled);
+    $('#honcho_ignore_global').prop('checked', !!s.ignoreGlobalConfig);
     $('#honcho_workspace_id').val(s.workspaceId);
     $('#honcho_peer_name').val(globalConfigCache?.peerName || '');
     $(`input[name="honcho_peer_mode"][value="${s.peerMode}"]`).prop('checked', true);
@@ -777,8 +779,8 @@ function loadSettingsUI() {
     $('#honcho_context_interval').val(s.contextInterval || 1);
     $('#honcho_context_summary').prop('checked', s.contextSummary);
 
-    // Show global config source info
-    if (globalConfigCache?.found) {
+    // Show global config source info (hidden when user has opted out)
+    if (!s.ignoreGlobalConfig && globalConfigCache?.found) {
         const source = [];
         if (globalConfigCache.hasApiKey && !secret_state[SECRET_KEYS.HONCHO]) {
             source.push('API key');
@@ -788,9 +790,15 @@ function loadSettingsUI() {
         }
         if (source.length > 0) {
             $('#honcho_config_source').text(`~/.honcho/config.json (${source.join(', ')})`).show();
+        } else {
+            $('#honcho_config_source').hide();
         }
+        $('#honcho_config_refresh').show();
+        $('#honcho_peer_name_section').show();
     } else {
         $('#honcho_config_source').hide();
+        $('#honcho_config_refresh').hide();
+        $('#honcho_peer_name_section').toggle(!s.ignoreGlobalConfig);
     }
 
     updateConditionalSections();
@@ -824,7 +832,17 @@ function bindSettingsListeners() {
     // Peer name override: writes to hosts.sillytavern.peerName in ~/.honcho/config.json.
     // Empty value clears the override (resolution falls back to root peerName).
     // Debounced so typing doesn't thrash the file; fires on blur too for safety.
+    const DEFAULT_PEER_HINT = 'Applies to new chats. Saved to ~/.honcho/config.json under hosts.sillytavern.';
     let peerNameSaveTimer = null;
+    let peerNameHintTimer = null;
+    const flashPeerHint = (msg, isError = false) => {
+        clearTimeout(peerNameHintTimer);
+        const $hint = $('#honcho_peer_name_hint');
+        $hint.text(msg).css('opacity', isError ? '1' : '0.9').toggleClass('honcho_hint_error', isError);
+        peerNameHintTimer = setTimeout(() => {
+            $hint.text(DEFAULT_PEER_HINT).css('opacity', '0.6').removeClass('honcho_hint_error');
+        }, 1800);
+    };
     const savePeerName = async () => {
         const value = $('#honcho_peer_name').val().trim();
         try {
@@ -833,7 +851,10 @@ function bindSettingsListeners() {
                 headers: getRequestHeaders(),
                 body: JSON.stringify({ peerName: value }),
             });
-            if (!resp.ok) return;
+            if (!resp.ok) {
+                flashPeerHint(`Save failed (${resp.status})`, true);
+                return;
+            }
             // Refresh cache so getUserPeerId() reflects the new value immediately
             const fresh = await fetch(`${PLUGIN_BASE}/config`, {
                 method: 'GET',
@@ -843,7 +864,10 @@ function bindSettingsListeners() {
                 globalConfigCache = await fresh.json();
             }
             resetCaches();
-        } catch { /* best-effort */ }
+            flashPeerHint(value ? `Saved — peer: ${value}` : 'Override cleared. Using root peerName.');
+        } catch (err) {
+            flashPeerHint(`Save failed: ${err.message}`, true);
+        }
     };
     $('#honcho_peer_name').on('input', function () {
         clearTimeout(peerNameSaveTimer);
@@ -852,6 +876,50 @@ function bindSettingsListeners() {
     $('#honcho_peer_name').on('change blur', function () {
         clearTimeout(peerNameSaveTimer);
         savePeerName();
+    });
+
+    // Ignore-global-config toggle: opts out of auto-detection from ~/.honcho/config.json.
+    // When on, the extension skips the /config fetch on reload, hides the source line,
+    // and hides the peer-name override field. Resolution falls back to ST persona name.
+    $('#honcho_ignore_global').on('change', async function () {
+        const ignore = $(this).prop('checked');
+        settings().ignoreGlobalConfig = ignore;
+        saveSettingsDebounced();
+        if (ignore) {
+            globalConfigCache = null;
+        } else {
+            // Re-enabling detection: pull fresh config so UI populates without a separate click
+            try {
+                const resp = await fetch(`${PLUGIN_BASE}/config`, {
+                    method: 'GET',
+                    headers: getRequestHeaders(),
+                });
+                if (resp.ok) {
+                    globalConfigCache = await resp.json();
+                }
+            } catch { /* best-effort */ }
+        }
+        resetCaches();
+        loadSettingsUI();
+    });
+
+    // Refresh from disk: re-read ~/.honcho/config.json and repopulate the UI.
+    $('#honcho_config_refresh').on('click', async function () {
+        const $btn = $(this);
+        const original = $btn.html();
+        $btn.prop('disabled', true).html('<i class="fa-solid fa-rotate fa-spin"></i> Reading');
+        try {
+            const resp = await fetch(`${PLUGIN_BASE}/config`, {
+                method: 'GET',
+                headers: getRequestHeaders(),
+            });
+            if (resp.ok) {
+                globalConfigCache = await resp.json();
+                resetCaches();
+                loadSettingsUI();
+            }
+        } catch { /* best-effort */ }
+        $btn.prop('disabled', false).html(original);
     });
 
     $('input[name="honcho_peer_mode"]').on('change', function () {
@@ -966,7 +1034,11 @@ jQuery(async () => {
     extension_settings.honcho = Object.assign({}, defaultSettings, extension_settings.honcho);
 
     // Try to auto-populate from global ~/.honcho/config.json
+    // (skipped when user has opted out via Ignore checkbox)
     try {
+        if (extension_settings.honcho?.ignoreGlobalConfig) {
+            throw new Error('ignored');
+        }
         const configResp = await fetch(`${PLUGIN_BASE}/config`, {
             method: 'GET',
             headers: getRequestHeaders(),
