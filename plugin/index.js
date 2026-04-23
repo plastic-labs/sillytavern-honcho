@@ -90,7 +90,7 @@ function saveGlobalConfig() {
  * Update the hosts.sillytavern entry in the global config.
  * Re-reads from disk first to avoid clobbering other tools' writes.
  */
-function updateSTHost(updates) {
+function updateSTHost(updates, deletes = []) {
     refreshGlobalConfig();
     if (!globalConfig) return;
 
@@ -98,6 +98,9 @@ function updateSTHost(updates) {
     if (!globalConfig.hosts.sillytavern) globalConfig.hosts.sillytavern = {};
 
     Object.assign(globalConfig.hosts.sillytavern, updates);
+    for (const key of deletes) {
+        delete globalConfig.hosts.sillytavern[key];
+    }
     saveGlobalConfig();
 }
 
@@ -296,14 +299,20 @@ export async function init(router) {
             return res.status(404).json({ error: 'No global config found at ~/.honcho/config.json' });
         }
 
-        const { aiPeer, workspace, sessionId } = req.body;
+        const { aiPeer, workspace, sessionId, peerName } = req.body;
         const updates = {};
+        const deletes = [];
 
         if (aiPeer) updates.aiPeer = aiPeer;
         if (workspace) updates.workspace = workspace;
+        // peerName: empty string / null clears the override (falls back to root peerName)
+        if (peerName !== undefined) {
+            if (peerName) updates.peerName = peerName;
+            else deletes.push('peerName');
+        }
 
-        if (Object.keys(updates).length > 0) {
-            updateSTHost(updates);
+        if (Object.keys(updates).length > 0 || deletes.length > 0) {
+            updateSTHost(updates, deletes);
         }
 
         if (sessionId) {

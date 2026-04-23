@@ -12,8 +12,6 @@ import {
     characters,
     this_chid,
     chat,
-    setUserName,
-    name1,
 } from '../../../../script.js';
 import {
     extension_settings,
@@ -764,6 +762,7 @@ function loadSettingsUI() {
     }
     $('#honcho_enabled').prop('checked', s.enabled);
     $('#honcho_workspace_id').val(s.workspaceId);
+    $('#honcho_peer_name').val(globalConfigCache?.peerName || '');
     $(`input[name="honcho_peer_mode"][value="${s.peerMode}"]`).prop('checked', true);
     $(`input[name="honcho_session_naming"][value="${s.sessionNaming || 'auto'}"]`).prop('checked', true);
     $('#honcho_custom_session').val(s.customSessionName || '');
@@ -786,9 +785,6 @@ function loadSettingsUI() {
         }
         if (globalConfigCache.workspace && s.workspaceId === globalConfigCache.workspace) {
             source.push('workspace');
-        }
-        if (globalConfigCache.peerName) {
-            source.push(`peer: ${globalConfigCache.peerName}`);
         }
         if (source.length > 0) {
             $('#honcho_config_source').text(`~/.honcho/config.json (${source.join(', ')})`).show();
@@ -823,6 +819,39 @@ function bindSettingsListeners() {
         resetCaches();
         saveSettingsDebounced();
         updateStatusIndicator();
+    });
+
+    // Peer name override: writes to hosts.sillytavern.peerName in ~/.honcho/config.json.
+    // Empty value clears the override (resolution falls back to root peerName).
+    // Debounced so typing doesn't thrash the file; fires on blur too for safety.
+    let peerNameSaveTimer = null;
+    const savePeerName = async () => {
+        const value = $('#honcho_peer_name').val().trim();
+        try {
+            const resp = await fetch(`${PLUGIN_BASE}/config/update`, {
+                method: 'POST',
+                headers: getRequestHeaders(),
+                body: JSON.stringify({ peerName: value }),
+            });
+            if (!resp.ok) return;
+            // Refresh cache so getUserPeerId() reflects the new value immediately
+            const fresh = await fetch(`${PLUGIN_BASE}/config`, {
+                method: 'GET',
+                headers: getRequestHeaders(),
+            });
+            if (fresh.ok) {
+                globalConfigCache = await fresh.json();
+            }
+            resetCaches();
+        } catch { /* best-effort */ }
+    };
+    $('#honcho_peer_name').on('input', function () {
+        clearTimeout(peerNameSaveTimer);
+        peerNameSaveTimer = setTimeout(savePeerName, 500);
+    });
+    $('#honcho_peer_name').on('change blur', function () {
+        clearTimeout(peerNameSaveTimer);
+        savePeerName();
     });
 
     $('input[name="honcho_peer_mode"]').on('change', function () {
@@ -962,11 +991,6 @@ jQuery(async () => {
                     settings().enabled = true;
                     changed = true;
                     console.log('[Honcho] Auto-enabled from global config');
-                }
-
-                // Sync ST persona name with Honcho peerName (only if still at default)
-                if (globalConfig.peerName && (!name1 || name1 === 'User')) {
-                    setUserName(globalConfig.peerName, { toastPersonaNameChange: false });
                 }
 
                 if (changed) {
