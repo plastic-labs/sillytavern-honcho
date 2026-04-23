@@ -30,28 +30,28 @@ function truncate(text, limit, label) {
     return text.slice(0, limit);
 }
 
-// Split a long message at paragraph/sentence boundaries so nothing is lost to the
-// API cap. The 0.5 floor avoids pathologically small chunks when no boundary
-// exists near the limit.
+// Split long messages at paragraph/sentence boundaries so nothing is lost to the API cap.
+// Ordered pairs of [boundary, length-after-boundary]; length matters for multi-char markers
+// like ". " (2) vs single-char CJK punctuation like "。" (1).
+const CHUNK_BOUNDARIES = [
+    ['\n\n', 2], ['\n', 1],
+    ['. ', 2], ['.\n', 2], ['! ', 2], ['? ', 2], ['; ', 2],
+    ['。', 1], ['！', 1], ['？', 1], ['；', 1], ['、', 1], [',', 1], [' ', 1],
+];
 function chunkText(text, limit) {
     if (typeof text !== 'string' || text.length <= limit) return [text];
     const chunks = [];
     let i = 0;
     while (i < text.length) {
-        if (text.length - i <= limit) {
-            chunks.push(text.slice(i));
-            break;
+        if (text.length - i <= limit) { chunks.push(text.slice(i)); break; }
+        const window = i + limit;
+        const floor = i + limit * 0.5;
+        let best = -1;
+        for (const [marker, len] of CHUNK_BOUNDARIES) {
+            const idx = text.lastIndexOf(marker, window);
+            if (idx > floor && idx + len > best) best = idx + len;
         }
-        let end = i + limit;
-        const para = text.lastIndexOf('\n\n', end);
-        if (para > i + limit * 0.5) {
-            end = para + 2;
-        } else {
-            const candidates = ['. ', '.\n', '! ', '? ', '\n']
-                .map(m => text.lastIndexOf(m, end))
-                .filter(idx => idx > i + limit * 0.5);
-            if (candidates.length > 0) end = Math.max(...candidates) + 2;
-        }
+        const end = best > 0 ? best : window;
         chunks.push(text.slice(i, end));
         i = end;
     }

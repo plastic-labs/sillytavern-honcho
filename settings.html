@@ -34,6 +34,7 @@
                 <!-- Workspace ID -->
                 <label for="honcho_workspace_id">Workspace ID</label>
                 <input id="honcho_workspace_id" type="text" class="text_pole" placeholder="Enter your Honcho workspace ID" />
+                <span id="honcho_workspace_id_hint" class="honcho_field_hint" style="font-size: 0.8em; opacity: 0.6;">Saved to ~/.honcho/config.json under hosts.sillytavern.</span>
 
                 <!-- Peer Name (your Honcho peer ID) -->
                 <div id="honcho_peer_name_section" class="honcho_section">
@@ -87,7 +88,10 @@
                 <!-- Current session (read-only; derived from Session Naming mode) -->
                 <div id="honcho_active_session_section" class="honcho_section">
                     <label>Active session</label>
-                    <input id="honcho_active_session" type="text" class="text_pole" placeholder="No active session" readonly title="Session ID is derived from Session Naming mode above. Editing would create a new Honcho session and orphan the current history." />
+                    <div style="display: flex; gap: 0.5em; align-items: center;">
+                        <input id="honcho_active_session" type="text" class="text_pole" placeholder="No active session" readonly style="flex: 1;" />
+                        <button type="button" id="honcho_reset_session" class="menu_button" title="Orphan current session and start a new one for this chat" style="white-space: nowrap;">Reset</button>
+                    </div>
                 </div>
 
                 <hr />

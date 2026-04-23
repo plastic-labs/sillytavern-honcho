@@ -255,10 +255,11 @@ function promptDiffResolution(diffs) {
 // Write ST persona → hosts.sillytavern.peerName when no explicit override exists.
 async function syncSTPersonaToGlobal() {
     if (settings().ignoreGlobalConfig) return;
-    if (!globalConfigCache) return; // fetch failed; can't tell current state
-    if (globalConfigCache.peerNameOverride) return; // respect explicit panel override
+    if (!globalConfigCache) return;
+    if (globalConfigCache.peerNameOverride) return;
     const persona = (getContext().name1 || '').trim();
     if (!persona || persona === 'User') return;
+    const prevOverride = globalConfigCache.peerNameOverride || '';
     try {
         const resp = await fetch(`${PLUGIN_BASE}/config/update`, {
             method: 'POST',
@@ -272,9 +273,9 @@ async function syncSTPersonaToGlobal() {
         });
         if (fresh.ok) globalConfigCache = await fresh.json();
         resetCaches();
-        if ($('#honcho_peer_name').length && document.activeElement?.id !== 'honcho_peer_name') {
-            $('#honcho_peer_name').val(persona);
-        }
+        // Only repaint the field if it still shows the pre-sync value (user hasn't edited it).
+        const $field = $('#honcho_peer_name');
+        if ($field.length && $field.val() === prevOverride) $field.val(persona);
         console.log(`[Honcho] Synced ST persona → hosts.sillytavern.peerName: ${persona}`);
     } catch { /* best-effort */ }
 }
@@ -964,8 +965,23 @@ function bindSettingsListeners() {
         }
     });
 
-    // Sequence counters drop stale in-flight saves (older request returning
-    // after a newer one must not overwrite the cache or flash hint).
+    // Sequence counters drop stale in-flight saves.
+    const makeFlashHint = (selector, getBaseText) => {
+        let timer = null;
+        return (msg, isError = false) => {
+            clearTimeout(timer);
+            const $hint = $(selector);
+            $hint.text(msg).css('opacity', isError ? '1' : '0.9').toggleClass('honcho_hint_error', !!isError);
+            timer = setTimeout(() => {
+                $hint.text(getBaseText()).css('opacity', '0.6').removeClass('honcho_hint_error');
+            }, 1800);
+        };
+    };
+    const flashWorkspaceHint = makeFlashHint('#honcho_workspace_id_hint', () =>
+        settings().ignoreGlobalConfig
+            ? 'Saved locally to this SillyTavern install.'
+            : 'Saved to ~/.honcho/config.json under hosts.sillytavern.',
+    );
     let workspaceSaveTimer = null;
     let workspaceSaveSeq = 0;
     const saveWorkspace = async () => {
@@ -975,21 +991,32 @@ function bindSettingsListeners() {
         resetCaches();
         saveSettingsDebounced();
         updateStatusIndicator();
-        if (settings().ignoreGlobalConfig) return;
+        if (settings().ignoreGlobalConfig) {
+            flashWorkspaceHint(value ? `Saved locally — workspace: ${value}` : 'Local workspace cleared.');
+            return;
+        }
         try {
             const resp = await fetch(`${PLUGIN_BASE}/config/update`, {
                 method: 'POST',
                 headers: getRequestHeaders(),
                 body: JSON.stringify({ workspace: value }),
             });
-            if (seq !== workspaceSaveSeq || !resp.ok) return;
+            if (seq !== workspaceSaveSeq) return;
+            if (!resp.ok) {
+                flashWorkspaceHint(`Save failed (${resp.status})`, true);
+                return;
+            }
             const fresh = await fetch(`${PLUGIN_BASE}/config`, {
                 method: 'GET',
                 headers: getRequestHeaders(),
             });
             if (seq !== workspaceSaveSeq || !fresh.ok) return;
             globalConfigCache = await fresh.json();
-        } catch { /* best-effort */ }
+            flashWorkspaceHint(value ? `Saved — workspace: ${value}` : 'Override cleared. Using root workspace.');
+        } catch (err) {
+            if (seq !== workspaceSaveSeq) return;
+            flashWorkspaceHint(`Save failed: ${err.message}`, true);
+        }
     };
     $('#honcho_workspace_id').on('input', function () {
         clearTimeout(workspaceSaveTimer);
@@ -1002,18 +1029,11 @@ function bindSettingsListeners() {
 
     // Save peer name: global on → hosts.sillytavern.peerName, off → local settings. Empty clears.
     let peerNameSaveTimer = null;
-    let peerNameHintTimer = null;
-    const flashPeerHint = (msg, isError = false) => {
-        clearTimeout(peerNameHintTimer);
-        const $hint = $('#honcho_peer_name_hint');
-        const baseHint = settings().ignoreGlobalConfig
+    const flashPeerHint = makeFlashHint('#honcho_peer_name_hint', () =>
+        settings().ignoreGlobalConfig
             ? 'Applies to new chats. Saved locally to this SillyTavern install.'
-            : 'Applies to new chats. Saved to ~/.honcho/config.json under hosts.sillytavern.';
-        $hint.text(msg).css('opacity', isError ? '1' : '0.9').toggleClass('honcho_hint_error', isError);
-        peerNameHintTimer = setTimeout(() => {
-            $hint.text(baseHint).css('opacity', '0.6').removeClass('honcho_hint_error');
-        }, 1800);
-    };
+            : 'Applies to new chats. Saved to ~/.honcho/config.json under hosts.sillytavern.',
+    );
     let peerNameSaveSeq = 0;
     const savePeerName = async () => {
         const seq = ++peerNameSaveSeq;
@@ -1058,6 +1078,27 @@ function bindSettingsListeners() {
     $('#honcho_peer_name').on('change', function () {
         clearTimeout(peerNameSaveTimer);
         savePeerName();
+    });
+
+    $('#honcho_reset_session').on('click', async function () {
+        const meta = chat_metadata?.honcho;
+        const oldId = meta?.sessionId;
+        if (!oldId) return;
+        const confirmed = await callGenericPopup(
+            `Start a new Honcho session for this chat?<br/><br/>` +
+            `Messages already in <code>${oldId}</code> stay there but will no longer ` +
+            `be linked to this chat. A fresh session will be created based on your ` +
+            `current Session Naming mode on the next message.`,
+            POPUP_TYPE.CONFIRM,
+            '',
+            { okButton: 'Start new session', cancelButton: 'Cancel' },
+        );
+        if (confirmed !== POPUP_RESULT.AFFIRMATIVE) return;
+        updateChatMetadata({ honcho: null });
+        saveMetadataDebounced();
+        resetCaches();
+        await onChatChanged();
+        updateActiveSessionDisplay();
     });
 
     $('#honcho_ignore_global_btn').on('click', async function () {
