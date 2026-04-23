@@ -925,10 +925,8 @@ function loadSettingsUI() {
         } else {
             $('#honcho_config_source').hide();
         }
-        $('#honcho_config_sync').show();
     } else {
         $('#honcho_config_source').hide();
-        $('#honcho_config_sync').hide();
     }
 
     updateConditionalSections();
@@ -1060,19 +1058,6 @@ function bindSettingsListeners() {
         saveSettingsDebounced();
         resetCaches();
         loadSettingsUI();
-    });
-
-    $('#honcho_config_sync').on('click', async function () {
-        const $btn = $(this);
-        const original = $btn.html();
-        $btn.prop('disabled', true).html('<i class="fa-solid fa-rotate fa-spin"></i> Syncing');
-        const result = await resolveGlobalSync();
-        if (!result.cancelled) {
-            globalConfigCache = result.global;
-            resetCaches();
-            loadSettingsUI();
-        }
-        $btn.prop('disabled', false).html(original);
     });
 
     $('input[name="honcho_peer_mode"]').on('change', function () {
