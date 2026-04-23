@@ -853,11 +853,38 @@ function bindSettingsListeners() {
         }
     });
 
-    $('#honcho_workspace_id').on('input', function () {
-        settings().workspaceId = $(this).val().trim();
+    let workspaceSaveTimer = null;
+    const saveWorkspace = async () => {
+        const value = $('#honcho_workspace_id').val().trim();
+        settings().workspaceId = value;
         resetCaches();
         saveSettingsDebounced();
         updateStatusIndicator();
+        if (settings().ignoreGlobalConfig) return;
+        try {
+            const resp = await fetch(`${PLUGIN_BASE}/config/update`, {
+                method: 'POST',
+                headers: getRequestHeaders(),
+                body: JSON.stringify({ workspace: value }),
+            });
+            if (!resp.ok) return;
+            const fresh = await fetch(`${PLUGIN_BASE}/config`, {
+                method: 'GET',
+                headers: getRequestHeaders(),
+            });
+            if (fresh.ok) {
+                globalConfigCache = await fresh.json();
+                loadSettingsUI();
+            }
+        } catch { /* best-effort */ }
+    };
+    $('#honcho_workspace_id').on('input', function () {
+        clearTimeout(workspaceSaveTimer);
+        workspaceSaveTimer = setTimeout(saveWorkspace, 500);
+    });
+    $('#honcho_workspace_id').on('change blur', function () {
+        clearTimeout(workspaceSaveTimer);
+        saveWorkspace();
     });
 
     // Peer-name save:

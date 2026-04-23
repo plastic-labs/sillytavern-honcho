@@ -308,8 +308,11 @@ export async function init(router) {
         const deletes = [];
 
         if (aiPeer) updates.aiPeer = aiPeer;
-        if (workspace) updates.workspace = workspace;
-        // peerName: empty string / null clears the override (falls back to root peerName)
+        // workspace & peerName: empty string / null clears the override (falls back to root)
+        if (workspace !== undefined) {
+            if (workspace) updates.workspace = workspace;
+            else deletes.push('workspace');
+        }
         if (peerName !== undefined) {
             if (peerName) updates.peerName = peerName;
             else deletes.push('peerName');
