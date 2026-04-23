@@ -439,6 +439,18 @@ async function onChatChanged() {
 
     resetCaches();
 
+    // Refresh globalConfigCache from disk so external-tool writes to
+    // ~/.honcho/config.json land before we freeze peer IDs into chat_metadata.
+    if (!settings().ignoreGlobalConfig) {
+        try {
+            const resp = await fetch(`${PLUGIN_BASE}/config`, {
+                method: 'GET',
+                headers: getRequestHeaders(),
+            });
+            if (resp.ok) globalConfigCache = await resp.json();
+        } catch { /* best-effort */ }
+    }
+
     const rawChatId = getCurrentChatId();
     if (!rawChatId) return;
 
@@ -476,8 +488,10 @@ async function onChatChanged() {
     sessionSetupInProgress = true;
 
     try {
-        const userPeerId = getUserPeerId();
-        const charPeerId = getCharPeerId();
+        // Freeze peer IDs once assigned, same invariant as sessionId.
+        const existingMeta = chat_metadata?.honcho;
+        const userPeerId = existingMeta?.userPeerId || getUserPeerId();
+        const charPeerId = existingMeta?.charPeerId || getCharPeerId();
 
         // Ensure peers exist
         await honchoFetch('/peer', { peerId: userPeerId, observeMe: true });
