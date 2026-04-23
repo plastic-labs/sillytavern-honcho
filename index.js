@@ -871,18 +871,12 @@ function updateActiveSessionDisplay() {
     $('#honcho_active_session').val(meta?.sessionId || '');
 }
 
-/**
- * Sync SillyTavern's function_calling flag to match the current Tool Call
- * enrichment mode. Without this, ToolManager registers tools but ST's
- * chat-completion request omits the `tools` key entirely.
- *
- * Called from both the mode-change listener and at extension load so the flag
- * stays in lockstep with contextMode. NOTE: this mutates a global ST setting
- * — every tool-registering extension sees the change.
- */
+// Only ENABLE function_calling when entering tool_call mode — never disable.
+// Other extensions may depend on it, and ST has no per-extension isolation;
+// leaving the flag alone on exit is the non-hostile default.
 function syncFunctionCallingFlag() {
-    if (oai_settings && 'function_calling' in oai_settings) {
-        oai_settings.function_calling = (settings().contextMode === 'tool_call');
+    if (oai_settings && 'function_calling' in oai_settings && settings().contextMode === 'tool_call') {
+        oai_settings.function_calling = true;
     }
 }
 
@@ -1086,27 +1080,44 @@ function bindSettingsListeners() {
         saveSettingsDebounced();
     });
 
-    // Renaming the active session re-registers it with Honcho
+    // Editing session ID doesn't rename — it switches the chat's pointer
+    // to a different Honcho session. Old messages stay in the old session.
     $('#honcho_active_session').on('change', async function () {
-        const newName = sanitizeId($(this).val().trim());
-        if (!newName) return;
-        $(this).val(newName);
-
+        const $field = $(this);
+        const newName = sanitizeId($field.val().trim());
         const meta = chat_metadata?.honcho;
         if (!meta) return;
+        const oldName = meta.sessionId;
+        if (!newName || newName === oldName) {
+            $field.val(oldName || '');
+            return;
+        }
+        $field.val(newName);
+
+        const confirmed = await callGenericPopup(
+            `Switch this chat to session <code>${newName}</code>?<br/><br/>` +
+            `Messages already in <code>${oldName}</code> stay there — this chat ` +
+            `won't be linked to them anymore. If <code>${newName}</code> already ` +
+            `exists, its history takes over.`,
+            POPUP_TYPE.CONFIRM,
+            '',
+            { okButton: 'Switch', cancelButton: 'Cancel' },
+        );
+        if (confirmed !== POPUP_RESULT.AFFIRMATIVE) {
+            $field.val(oldName || '');
+            return;
+        }
 
         meta.sessionId = newName;
         updateChatMetadata({ honcho: meta });
         saveMetadataDebounced();
 
-        // Re-register session with new name
         try {
             await honchoFetch('/session', {
                 sessionId: newName,
                 userPeerId: meta.userPeerId,
                 charPeerId: meta.charPeerId,
             });
-            // Update global config
             await fetch(`${PLUGIN_BASE}/config/update`, {
                 method: 'POST',
                 headers: getRequestHeaders(),
