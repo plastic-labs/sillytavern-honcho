@@ -369,7 +369,7 @@ export async function init(router) {
     // POST /session — Create or get a session and add peers
     router.post('/session', async (req, res) => {
         try {
-            const { sessionId, userPeerId, charPeerId } = req.body;
+            const { sessionId, userPeerId, charPeerId, charPeerIds } = req.body;
             if (!sessionId) {
                 return res.status(400).json({ error: 'sessionId is required' });
             }
@@ -378,20 +378,35 @@ export async function init(router) {
             const session = await client.session(sessionId);
 
             const peersToAdd = [];
-            if (userPeerId) {
-                peersToAdd.push([userPeerId, { observeMe: true }]);
-            }
-            if (charPeerId) {
-                peersToAdd.push([charPeerId, { observeMe: false }]);
-            }
+            if (userPeerId) peersToAdd.push([userPeerId, { observeMe: true }]);
 
-            if (peersToAdd.length > 0) {
-                await session.addPeers(peersToAdd);
-            }
+            // Prefer charPeerIds (group mode); fall back to single charPeerId.
+            const charIds = Array.isArray(charPeerIds) && charPeerIds.length > 0
+                ? charPeerIds
+                : (charPeerId ? [charPeerId] : []);
+            for (const id of charIds) peersToAdd.push([id, { observeMe: false }]);
+
+            if (peersToAdd.length > 0) await session.addPeers(peersToAdd);
 
             return res.json({ id: session.id, workspaceId: session.workspaceId });
         } catch (err) {
             return sendError(res, err, 'session');
+        }
+    });
+
+    // Lazy peer registration for group members joining mid-session.
+    router.post('/session/add-peers', async (req, res) => {
+        try {
+            const { sessionId, peerIds } = req.body;
+            if (!sessionId || !Array.isArray(peerIds) || peerIds.length === 0) {
+                return res.status(400).json({ error: 'sessionId and peerIds[] are required' });
+            }
+            const client = await getClient(req.honchoApiKey, req.honchoWorkspaceId);
+            const session = await client.session(sessionId);
+            await session.addPeers(peerIds.map(id => [id, { observeMe: false }]));
+            return res.json({ ok: true });
+        } catch (err) {
+            return sendError(res, err, 'session/add-peers');
         }
     });
 

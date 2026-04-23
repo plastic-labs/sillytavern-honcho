@@ -20,7 +20,7 @@ import {
     saveMetadataDebounced,
 } from '../../../extensions.js';
 import { SECRET_KEYS, secret_state } from '../../../secrets.js';
-import { selected_group } from '../../../group-chats.js';
+import { selected_group, groups } from '../../../group-chats.js';
 import { oai_settings } from '../../../openai.js';
 import { callGenericPopup, POPUP_TYPE, POPUP_RESULT } from '../../../popup.js';
 
@@ -287,18 +287,37 @@ async function syncSTPersonaToGlobal() {
     }
 }
 
-/**
- * Resolve the character peer ID using the character's display name.
- */
+// In a group, returns the first member's peer ID as the "primary" char peer.
+// Group-aware read paths should use chat_metadata.honcho.charPeerIds instead.
 function getCharPeerId() {
     if (selected_group) {
+        const members = getGroupCharPeerIds();
+        if (members.length > 0) return members[0];
         return sanitizeId(`group-${selected_group}`);
     }
     if (this_chid !== undefined && characters[this_chid]) {
-        // Use character name, not avatar filename
         return sanitizeId(characters[this_chid].name || `char-${this_chid}`);
     }
     return 'unknown-char';
+}
+
+// All peer IDs for the current group's AI members (empty outside groups).
+function getGroupCharPeerIds() {
+    if (!selected_group) return [];
+    const group = groups?.find(g => g.id === selected_group);
+    if (!group?.members) return [];
+    const names = group.members
+        .map(avatar => characters.find(c => c.avatar === avatar)?.name)
+        .filter(Boolean);
+    return [...new Set(names.map(sanitizeId))];
+}
+
+// Resolve the peer ID for whichever character produced a given chat message.
+function getPeerIdForMessage(message) {
+    if (selected_group && message?.name) {
+        return sanitizeId(message.name);
+    }
+    return getCharPeerId();
 }
 
 /**
@@ -488,20 +507,24 @@ async function onChatChanged() {
     sessionSetupInProgress = true;
 
     try {
-        // Freeze peer IDs once assigned, same invariant as sessionId.
+        // Freeze peer IDs (including group roster) once assigned; mid-session joiners are lazy-added by onCharResponse.
         const existingMeta = chat_metadata?.honcho;
         const userPeerId = existingMeta?.userPeerId || getUserPeerId();
         const charPeerId = existingMeta?.charPeerId || getCharPeerId();
+        const groupCharPeerIds = existingMeta?.charPeerIds?.length
+            ? existingMeta.charPeerIds
+            : getGroupCharPeerIds();
 
-        // Ensure peers exist
         await honchoFetch('/peer', { peerId: userPeerId, observeMe: true });
-        await honchoFetch('/peer', { peerId: charPeerId, observeMe: false });
+        for (const peerId of groupCharPeerIds.length > 0 ? groupCharPeerIds : [charPeerId]) {
+            await honchoFetch('/peer', { peerId, observeMe: false });
+        }
 
-        // Ensure session exists with peers
         const result = await honchoFetch('/session', {
             sessionId: chatId,
             userPeerId,
             charPeerId,
+            charPeerIds: groupCharPeerIds.length > 0 ? groupCharPeerIds : undefined,
         });
 
         if (result) {
@@ -510,6 +533,7 @@ async function onChatChanged() {
                     sessionId: chatId,
                     userPeerId,
                     charPeerId,
+                    charPeerIds: groupCharPeerIds,
                 },
             });
             saveMetadataDebounced();
@@ -735,9 +759,31 @@ async function onCharResponse(messageIndex) {
     // Skip swiped-away messages (only store if this is the latest message)
     if (messageIndex !== chat.length - 1) return;
 
+    // Groups: lazy-add the responding character's peer to the session if not
+    // seen at setup. Only persist to metadata if BOTH /peer and /session/add-peers
+    // succeed, so a transient failure can be retried on the next message.
+    const peerId = getPeerIdForMessage(message);
+    if (selected_group) {
+        const known = honchoMeta.charPeerIds || [];
+        if (!known.includes(peerId)) {
+            const created = await honchoFetch('/peer', { peerId, observeMe: false });
+            if (created) {
+                const added = await honchoFetch('/session/add-peers', {
+                    sessionId: honchoMeta.sessionId,
+                    peerIds: [peerId],
+                });
+                if (added) {
+                    honchoMeta.charPeerIds = [...known, peerId];
+                    updateChatMetadata({ honcho: honchoMeta });
+                    saveMetadataDebounced();
+                }
+            }
+        }
+    }
+
     await honchoFetch('/session/messages', {
         sessionId: honchoMeta.sessionId,
-        messages: [{ peerId: honchoMeta.charPeerId, content: message.mes }],
+        messages: [{ peerId, content: message.mes }],
     });
 }
 
