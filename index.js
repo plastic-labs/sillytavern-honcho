@@ -42,6 +42,7 @@ const defaultSettings = {
     contextInterval: 1,
     contextSummary: true,
     ignoreGlobalConfig: false,
+    peerName: '',
 };
 
 let sessionSetupInProgress = false;
@@ -115,22 +116,21 @@ let globalConfigCache = null;
 
 /**
  * Resolve the user peer ID based on current peer mode.
- * Priority: globalConfig.peerName > persona name > display name
+ * Priority: globalConfig.peerName > local settings peerName > ST persona name
  */
 function getUserPeerId() {
     const context = getContext();
+    const explicit = globalConfigCache?.peerName || settings().peerName || null;
 
-    // Use global config peerName if available (e.g. "eri")
-    if (globalConfigCache?.peerName) {
+    if (explicit) {
         if (settings().peerMode === 'per_persona') {
             const personaName = context.name1 || 'default';
-            // Don't duplicate if persona name matches peerName
-            if (sanitizeId(personaName) === sanitizeId(globalConfigCache.peerName)) {
-                return sanitizeId(globalConfigCache.peerName);
+            if (sanitizeId(personaName) === sanitizeId(explicit)) {
+                return sanitizeId(explicit);
             }
-            return sanitizeId(`${globalConfigCache.peerName}-${personaName}`);
+            return sanitizeId(`${explicit}-${personaName}`);
         }
-        return sanitizeId(globalConfigCache.peerName);
+        return sanitizeId(explicit);
     }
 
     // Fallback: use ST display name
@@ -762,9 +762,14 @@ function loadSettingsUI() {
         console.log('[Honcho] Migrated contextMode: prefetch → reasoning');
     }
     $('#honcho_enabled').prop('checked', s.enabled);
-    $('#honcho_ignore_global').prop('checked', !!s.ignoreGlobalConfig);
+    $('#honcho_ignore_global_btn').text(s.ignoreGlobalConfig ? 'Enable global config' : 'Disable global config');
     $('#honcho_workspace_id').val(s.workspaceId);
-    $('#honcho_peer_name').val(globalConfigCache?.peerName || '');
+    $('#honcho_peer_name').val(globalConfigCache?.peerName || s.peerName || '');
+    $('#honcho_peer_name_hint').text(
+        s.ignoreGlobalConfig
+            ? 'Applies to new chats. Saved locally to this SillyTavern install.'
+            : 'Applies to new chats. Saved to ~/.honcho/config.json under hosts.sillytavern.'
+    );
     $(`input[name="honcho_peer_mode"][value="${s.peerMode}"]`).prop('checked', true);
     $(`input[name="honcho_session_naming"][value="${s.sessionNaming || 'auto'}"]`).prop('checked', true);
     $('#honcho_custom_session').val(s.customSessionName || '');
@@ -779,7 +784,7 @@ function loadSettingsUI() {
     $('#honcho_context_interval').val(s.contextInterval || 1);
     $('#honcho_context_summary').prop('checked', s.contextSummary);
 
-    // Show global config source info (hidden when user has opted out)
+    // Source line + refresh button only meaningful when detection is on
     if (!s.ignoreGlobalConfig && globalConfigCache?.found) {
         const source = [];
         if (globalConfigCache.hasApiKey && !secret_state[SECRET_KEYS.HONCHO]) {
@@ -794,11 +799,9 @@ function loadSettingsUI() {
             $('#honcho_config_source').hide();
         }
         $('#honcho_config_refresh').show();
-        $('#honcho_peer_name_section').show();
     } else {
         $('#honcho_config_source').hide();
         $('#honcho_config_refresh').hide();
-        $('#honcho_peer_name_section').toggle(!s.ignoreGlobalConfig);
     }
 
     updateConditionalSections();
@@ -829,22 +832,32 @@ function bindSettingsListeners() {
         updateStatusIndicator();
     });
 
-    // Peer name override: writes to hosts.sillytavern.peerName in ~/.honcho/config.json.
-    // Empty value clears the override (resolution falls back to root peerName).
-    // Debounced so typing doesn't thrash the file; fires on blur too for safety.
-    const DEFAULT_PEER_HINT = 'Applies to new chats. Saved to ~/.honcho/config.json under hosts.sillytavern.';
+    // Peer-name save:
+    //   detection on  → writes to hosts.sillytavern.peerName in ~/.honcho/config.json
+    //   detection off → writes to extension_settings.honcho.peerName (local to this ST install)
+    // Empty value clears the stored peer name in whichever store is active.
     let peerNameSaveTimer = null;
     let peerNameHintTimer = null;
     const flashPeerHint = (msg, isError = false) => {
         clearTimeout(peerNameHintTimer);
         const $hint = $('#honcho_peer_name_hint');
+        const baseHint = settings().ignoreGlobalConfig
+            ? 'Applies to new chats. Saved locally to this SillyTavern install.'
+            : 'Applies to new chats. Saved to ~/.honcho/config.json under hosts.sillytavern.';
         $hint.text(msg).css('opacity', isError ? '1' : '0.9').toggleClass('honcho_hint_error', isError);
         peerNameHintTimer = setTimeout(() => {
-            $hint.text(DEFAULT_PEER_HINT).css('opacity', '0.6').removeClass('honcho_hint_error');
+            $hint.text(baseHint).css('opacity', '0.6').removeClass('honcho_hint_error');
         }, 1800);
     };
     const savePeerName = async () => {
         const value = $('#honcho_peer_name').val().trim();
+        if (settings().ignoreGlobalConfig) {
+            settings().peerName = value;
+            saveSettingsDebounced();
+            resetCaches();
+            flashPeerHint(value ? `Saved locally — peer: ${value}` : 'Local peer name cleared.');
+            return;
+        }
         try {
             const resp = await fetch(`${PLUGIN_BASE}/config/update`, {
                 method: 'POST',
@@ -878,26 +891,26 @@ function bindSettingsListeners() {
         savePeerName();
     });
 
-    // Ignore-global-config toggle: opts out of auto-detection from ~/.honcho/config.json.
-    // When on, the extension skips the /config fetch on reload, hides the source line,
-    // and hides the peer-name override field. Resolution falls back to ST persona name.
-    $('#honcho_ignore_global').on('change', async function () {
-        const ignore = $(this).prop('checked');
-        settings().ignoreGlobalConfig = ignore;
+    // Enable/Disable global config detection. Opts out of auto-reading
+    // ~/.honcho/config.json. Peer-name field stays visible; saves become local.
+    $('#honcho_ignore_global_btn').on('click', async function () {
+        const wasIgnoring = !!settings().ignoreGlobalConfig;
+        const nowIgnore = !wasIgnoring;
+        settings().ignoreGlobalConfig = nowIgnore;
         saveSettingsDebounced();
-        if (ignore) {
+        if (nowIgnore) {
             globalConfigCache = null;
         } else {
-            // Re-enabling detection: pull fresh config so UI populates without a separate click
+            // Re-enabling: pull fresh so UI populates without a separate click
             try {
                 const resp = await fetch(`${PLUGIN_BASE}/config`, {
                     method: 'GET',
                     headers: getRequestHeaders(),
                 });
-                if (resp.ok) {
-                    globalConfigCache = await resp.json();
-                }
-            } catch { /* best-effort */ }
+                globalConfigCache = resp.ok ? await resp.json() : null;
+            } catch {
+                globalConfigCache = null;
+            }
         }
         resetCaches();
         loadSettingsUI();
