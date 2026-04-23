@@ -144,14 +144,20 @@ function getUserPeerId() {
 // Diff local vs ~/.honcho/config.json, prompt Inherit/Push/Cancel if diverged.
 async function resolveGlobalSync() {
     let global = null;
+    let fetchOk = false;
     try {
         const resp = await fetch(`${PLUGIN_BASE}/config`, {
             method: 'GET',
             headers: getRequestHeaders(),
         });
-        if (resp.ok) global = await resp.json();
+        if (resp.ok) {
+            global = await resp.json();
+            fetchOk = true;
+        }
     } catch { /* no-op */ }
 
+    // Network failure: don't mutate state or flip toggle.
+    if (!fetchOk) return { cancelled: true, global: null };
     if (!global?.found) return { cancelled: false, global };
 
     const s = settings();
@@ -950,8 +956,12 @@ function bindSettingsListeners() {
         }
     });
 
+    // Sequence counters drop stale in-flight saves (older request returning
+    // after a newer one must not overwrite the cache or flash hint).
     let workspaceSaveTimer = null;
+    let workspaceSaveSeq = 0;
     const saveWorkspace = async () => {
+        const seq = ++workspaceSaveSeq;
         const value = $('#honcho_workspace_id').val().trim();
         settings().workspaceId = value;
         resetCaches();
@@ -964,15 +974,13 @@ function bindSettingsListeners() {
                 headers: getRequestHeaders(),
                 body: JSON.stringify({ workspace: value }),
             });
-            if (!resp.ok) return;
+            if (seq !== workspaceSaveSeq || !resp.ok) return;
             const fresh = await fetch(`${PLUGIN_BASE}/config`, {
                 method: 'GET',
                 headers: getRequestHeaders(),
             });
-            if (fresh.ok) {
-                globalConfigCache = await fresh.json();
-                loadSettingsUI();
-            }
+            if (seq !== workspaceSaveSeq || !fresh.ok) return;
+            globalConfigCache = await fresh.json();
         } catch { /* best-effort */ }
     };
     $('#honcho_workspace_id').on('input', function () {
@@ -998,7 +1006,9 @@ function bindSettingsListeners() {
             $hint.text(baseHint).css('opacity', '0.6').removeClass('honcho_hint_error');
         }, 1800);
     };
+    let peerNameSaveSeq = 0;
     const savePeerName = async () => {
+        const seq = ++peerNameSaveSeq;
         const value = $('#honcho_peer_name').val().trim();
         if (settings().ignoreGlobalConfig) {
             settings().peerName = value;
@@ -1013,6 +1023,7 @@ function bindSettingsListeners() {
                 headers: getRequestHeaders(),
                 body: JSON.stringify({ peerName: value }),
             });
+            if (seq !== peerNameSaveSeq) return;
             if (!resp.ok) {
                 flashPeerHint(`Save failed (${resp.status})`, true);
                 return;
@@ -1021,12 +1032,14 @@ function bindSettingsListeners() {
                 method: 'GET',
                 headers: getRequestHeaders(),
             });
+            if (seq !== peerNameSaveSeq) return;
             if (fresh.ok) {
                 globalConfigCache = await fresh.json();
             }
             resetCaches();
             flashPeerHint(value ? `Saved — peer: ${value}` : 'Override cleared. Using root peerName.');
         } catch (err) {
+            if (seq !== peerNameSaveSeq) return;
             flashPeerHint(`Save failed: ${err.message}`, true);
         }
     };
@@ -1172,10 +1185,7 @@ jQuery(async () => {
     extension_settings.honcho = Object.assign({}, defaultSettings, extension_settings.honcho);
 
     // Auto-populate from ~/.honcho/config.json unless opted out.
-    try {
-        if (extension_settings.honcho?.ignoreGlobalConfig) {
-            throw new Error('ignored');
-        }
+    if (!extension_settings.honcho?.ignoreGlobalConfig) try {
         const configResp = await fetch(`${PLUGIN_BASE}/config`, {
             method: 'GET',
             headers: getRequestHeaders(),
