@@ -253,13 +253,17 @@ function promptDiffResolution(diffs) {
 }
 
 // Write ST persona → hosts.sillytavern.peerName when no explicit override exists.
+let personaSyncInFlight = false;
+let personaSyncPending = false;
 async function syncSTPersonaToGlobal() {
+    if (personaSyncInFlight) { personaSyncPending = true; return; }
     if (settings().ignoreGlobalConfig) return;
     if (!globalConfigCache) return;
     if (globalConfigCache.peerNameOverride) return;
     const persona = (getContext().name1 || '').trim();
     if (!persona || persona === 'User') return;
     const prevOverride = globalConfigCache.peerNameOverride || '';
+    personaSyncInFlight = true;
     try {
         const resp = await fetch(`${PLUGIN_BASE}/config/update`, {
             method: 'POST',
@@ -277,7 +281,10 @@ async function syncSTPersonaToGlobal() {
         const $field = $('#honcho_peer_name');
         if ($field.length && $field.val() === prevOverride) $field.val(persona);
         console.log(`[Honcho] Synced ST persona → hosts.sillytavern.peerName: ${persona}`);
-    } catch { /* best-effort */ }
+    } catch { /* best-effort */ } finally {
+        personaSyncInFlight = false;
+        if (personaSyncPending) { personaSyncPending = false; syncSTPersonaToGlobal(); }
+    }
 }
 
 /**
@@ -1084,11 +1091,17 @@ function bindSettingsListeners() {
         const meta = chat_metadata?.honcho;
         const oldId = meta?.sessionId;
         if (!oldId) return;
+        const $content = $('<div>');
+        $content.append($('<p>').text('Start a new Honcho session for this chat?'));
+        $content.append(
+            $('<p>').append(
+                'Messages already in ',
+                $('<code>').text(oldId),
+                " stay there but will no longer be linked to this chat. A fresh session will be created based on your current Session Naming mode on the next message.",
+            ),
+        );
         const confirmed = await callGenericPopup(
-            `Start a new Honcho session for this chat?<br/><br/>` +
-            `Messages already in <code>${oldId}</code> stay there but will no longer ` +
-            `be linked to this chat. A fresh session will be created based on your ` +
-            `current Session Naming mode on the next message.`,
+            $content[0],
             POPUP_TYPE.CONFIRM,
             '',
             { okButton: 'Start new session', cancelButton: 'Cancel' },
