@@ -17,11 +17,11 @@
                 <!-- Status indicator -->
                 <span id="honcho_status" class="honcho_status not-ready">Not configured</span>
                 <div class="honcho_config_source_row" style="display: flex; align-items: center; gap: 0.5em; margin-top: 0.3em; flex-wrap: nowrap;">
-                    <span id="honcho_config_source" class="honcho_config_source" style="display:none; font-size: 0.85em; opacity: 0.6; flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"></span>
-                    <button type="button" id="honcho_config_refresh" class="menu_button" title="Re-read ~/.honcho/config.json from disk" style="display: none; padding: 2px 6px; font-size: 0.75em; white-space: nowrap;">
+                    <button type="button" id="honcho_config_refresh" class="menu_button" title="Re-read ~/.honcho/config.json and sync if diverged" style="display: none; white-space: nowrap;">
                         <i class="fa-solid fa-rotate"></i> Refresh
                     </button>
-                    <button type="button" id="honcho_ignore_global_btn" class="menu_button" title="Toggle auto-detection of ~/.honcho/config.json" style="padding: 2px 6px; font-size: 0.75em; white-space: nowrap;">
+                    <span id="honcho_config_source" class="honcho_config_source" style="display:none; font-size: 0.85em; opacity: 0.6; flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"></span>
+                    <button type="button" id="honcho_ignore_global_btn" class="menu_button" title="Toggle auto-detection of ~/.honcho/config.json" style="white-space: nowrap;">
                         Disable global config
                     </button>
                 </div>

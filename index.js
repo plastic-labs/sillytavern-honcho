@@ -142,10 +142,67 @@ function getUserPeerId() {
     return sanitizeId(context.name1 || 'user');
 }
 
+// Fetch global config, diff against local, prompt Inherit/Push/Cancel if diverged.
+// Shared by Enable and Refresh so both behave identically.
+async function resolveGlobalSync() {
+    let global = null;
+    try {
+        const resp = await fetch(`${PLUGIN_BASE}/config`, {
+            method: 'GET',
+            headers: getRequestHeaders(),
+        });
+        if (resp.ok) global = await resp.json();
+    } catch { /* no-op */ }
+
+    if (!global?.found) return { cancelled: false, global };
+
+    const s = settings();
+    const globalWs = global.workspace || '';
+    const globalPeer = global.peerNameOverride || global.peerName || '';
+    const diffs = [];
+    if (globalWs !== (s.workspaceId || '')) {
+        diffs.push({ field: 'workspace', global: globalWs, local: s.workspaceId || '' });
+    }
+    if (globalPeer !== (s.peerName || '')) {
+        diffs.push({ field: 'peerName', global: globalPeer, local: s.peerName || '' });
+    }
+    if (diffs.length === 0) return { cancelled: false, global };
+
+    const action = await promptDiffResolution(diffs);
+    if (action === 'cancel') return { cancelled: true, global };
+
+    if (action === 'inherit') {
+        for (const d of diffs) {
+            if (d.field === 'workspace') s.workspaceId = d.global;
+            if (d.field === 'peerName') s.peerName = '';
+        }
+        saveSettingsDebounced();
+    } else if (action === 'push') {
+        const payload = {};
+        for (const d of diffs) {
+            if (d.field === 'workspace') payload.workspace = d.local;
+            if (d.field === 'peerName') payload.peerName = d.local;
+        }
+        try {
+            await fetch(`${PLUGIN_BASE}/config/update`, {
+                method: 'POST',
+                headers: getRequestHeaders(),
+                body: JSON.stringify(payload),
+            });
+            const refresh = await fetch(`${PLUGIN_BASE}/config`, {
+                method: 'GET',
+                headers: getRequestHeaders(),
+            });
+            if (refresh.ok) global = await refresh.json();
+        } catch { /* best-effort */ }
+    }
+    return { cancelled: false, global };
+}
+
 // Themed diff dialog for the re-enable flow.
 function promptDiffResolution(diffs) {
     const $content = $('<div>');
-    $content.append($('<h3>').text('Re-enable global config'));
+    $content.append($('<h3>').text('Sync with global config'));
     $content.append($('<p>').text('Your local values differ from ~/.honcho/config.json. Choose which direction to sync:'));
     const $table = $('<table style="margin: 0.8em auto; border-collapse: collapse; font-family: monospace; font-size: 0.9em;">');
     const $thead = $('<thead>').append(
@@ -992,60 +1049,9 @@ function bindSettingsListeners() {
         const wasIgnoring = !!settings().ignoreGlobalConfig;
 
         if (wasIgnoring) {
-            // Re-enabling: diff local vs global, ask which direction to sync
-            let freshGlobal = null;
-            try {
-                const resp = await fetch(`${PLUGIN_BASE}/config`, {
-                    method: 'GET',
-                    headers: getRequestHeaders(),
-                });
-                if (resp.ok) freshGlobal = await resp.json();
-            } catch { /* no-op */ }
-
-            if (freshGlobal?.found) {
-                const s = settings();
-                const globalWs = freshGlobal.workspace || '';
-                const globalPeer = freshGlobal.peerNameOverride || freshGlobal.peerName || '';
-                const diffs = [];
-                if (globalWs !== (s.workspaceId || '')) {
-                    diffs.push({ field: 'workspace', global: globalWs, local: s.workspaceId || '' });
-                }
-                if (globalPeer !== (s.peerName || '')) {
-                    diffs.push({ field: 'peerName', global: globalPeer, local: s.peerName || '' });
-                }
-
-                if (diffs.length > 0) {
-                    const action = await promptDiffResolution(diffs);
-                    if (action === 'cancel') return;
-                    if (action === 'inherit') {
-                        for (const d of diffs) {
-                            if (d.field === 'workspace') s.workspaceId = d.global;
-                            if (d.field === 'peerName') s.peerName = '';
-                        }
-                        saveSettingsDebounced();
-                    } else if (action === 'push') {
-                        const payload = {};
-                        for (const d of diffs) {
-                            if (d.field === 'workspace') payload.workspace = d.local;
-                            if (d.field === 'peerName') payload.peerName = d.local;
-                        }
-                        try {
-                            await fetch(`${PLUGIN_BASE}/config/update`, {
-                                method: 'POST',
-                                headers: getRequestHeaders(),
-                                body: JSON.stringify(payload),
-                            });
-                            const refresh = await fetch(`${PLUGIN_BASE}/config`, {
-                                method: 'GET',
-                                headers: getRequestHeaders(),
-                            });
-                            if (refresh.ok) freshGlobal = await refresh.json();
-                        } catch { /* best-effort */ }
-                    }
-                }
-            }
-
-            globalConfigCache = freshGlobal;
+            const result = await resolveGlobalSync();
+            if (result.cancelled) return;
+            globalConfigCache = result.global;
         } else {
             globalConfigCache = null;
         }
@@ -1056,22 +1062,16 @@ function bindSettingsListeners() {
         loadSettingsUI();
     });
 
-    // Refresh from disk: re-read ~/.honcho/config.json and repopulate the UI.
     $('#honcho_config_refresh').on('click', async function () {
         const $btn = $(this);
         const original = $btn.html();
         $btn.prop('disabled', true).html('<i class="fa-solid fa-rotate fa-spin"></i> Reading');
-        try {
-            const resp = await fetch(`${PLUGIN_BASE}/config`, {
-                method: 'GET',
-                headers: getRequestHeaders(),
-            });
-            if (resp.ok) {
-                globalConfigCache = await resp.json();
-                resetCaches();
-                loadSettingsUI();
-            }
-        } catch { /* best-effort */ }
+        const result = await resolveGlobalSync();
+        if (!result.cancelled) {
+            globalConfigCache = result.global;
+            resetCaches();
+            loadSettingsUI();
+        }
         $btn.prop('disabled', false).html(original);
     });
 
