@@ -69,7 +69,13 @@ function loadGlobalConfig() {
         const config = JSON.parse(raw);
         console.log(`[honcho-proxy] Loaded global config from ${configPath}`);
         return config;
-    } catch {
+    } catch (err) {
+        // ENOENT = file doesn't exist yet (fine, bootstrap path will create it).
+        // Any other error (partial read mid-write, malformed JSON) is suspect —
+        // log and signal "don't know" so we don't clobber someone else's write.
+        if (err.code !== 'ENOENT') {
+            console.warn(`[honcho-proxy] Failed to load ${configPath}: ${err.message}`);
+        }
         return null;
     }
 }
@@ -106,21 +112,22 @@ function refreshGlobalConfig() {
     }
 }
 
-/**
- * Write the current globalConfig back to ~/.honcho/config.json.
- * Creates the directory if needed.
- */
+// Atomic write via tmp + rename — readers never see a partial file and
+// concurrent writers from other honcho tools can't corrupt mid-write.
 function saveGlobalConfig() {
     if (!globalConfig) return false;
+    const tmpPath = `${GLOBAL_CONFIG_PATH}.tmp.${process.pid}`;
     try {
         const dir = path.dirname(GLOBAL_CONFIG_PATH);
         if (!fs.existsSync(dir)) {
             fs.mkdirSync(dir, { recursive: true });
         }
-        fs.writeFileSync(GLOBAL_CONFIG_PATH, JSON.stringify(globalConfig, null, 2) + '\n');
+        fs.writeFileSync(tmpPath, JSON.stringify(globalConfig, null, 2) + '\n');
+        fs.renameSync(tmpPath, GLOBAL_CONFIG_PATH);
         return true;
     } catch (err) {
         console.error(`[honcho-proxy] Failed to save global config: ${err.message}`);
+        try { fs.unlinkSync(tmpPath); } catch { /* no-op */ }
         return false;
     }
 }
