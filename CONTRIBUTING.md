@@ -13,13 +13,12 @@ The dev-install path below uses symlinks for both the extension and the plugin.
 - Node.js >= 18
 - A Honcho instance (local or cloud)
 - A Honcho API key from [app.honcho.dev](https://app.honcho.dev)
-- While `sillytavern-honcho` is private, `plastic-labs` GitHub org access to clone (this line will be removed once the repo is public)
 
 ## Dev install
 
 ```bash
 # 1. Clone both repos
-gh repo clone plastic-labs/sillytavern-honcho
+git clone https://github.com/plastic-labs/sillytavern-honcho.git
 git clone --branch staging https://github.com/SillyTavern/SillyTavern.git
 
 # 2. Install SillyTavern's own dependencies (its setup docs require this)
@@ -114,7 +113,6 @@ Follows Plastic Labs house style ([Conventional Commits](https://www.conventiona
 
 - **Title:** `<type>(<scope>): <description>` — types: `feat`, `fix`, `docs`, `chore`. Scope optional.
 - **Branch:** `<firstname>/<slug-or-ticket>` for internal contributors; `<type>/<slug>` for external.
-- **Linear ticket IDs** (`DEV-XXXX`, `AI-XXX`): include in the PR description or commit subjects so Linear auto-links.
 
 ## Uninstall (dev install)
 
