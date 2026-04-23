@@ -19,6 +19,17 @@ const clientCache = new Map();
 /** Global Honcho config loaded from ~/.honcho/config.json */
 let globalConfig = null;
 
+// Honcho API caps: 25,000 chars per stored message, 10,000 per dialectic query.
+// Leave a small safety margin to avoid edge-case rejections.
+const MESSAGE_CHAR_LIMIT = 24_500;
+const QUERY_CHAR_LIMIT = 9_500;
+
+function truncate(text, limit, label) {
+    if (typeof text !== 'string' || text.length <= limit) return text;
+    console.warn(`[honcho-proxy] Truncating ${label}: ${text.length} → ${limit} chars`);
+    return text.slice(0, limit);
+}
+
 /**
  * Load the global Honcho config from ~/.honcho/config.json.
  * Returns the parsed config or null if not found/invalid.
@@ -48,7 +59,7 @@ function getGlobalConfigForST() {
 
     const stHost = globalConfig.hosts?.sillytavern;
     return {
-        apiKey: globalConfig.apiKey || null,
+        apiKey: stHost?.apiKey || globalConfig.apiKey || null,
         peerName: stHost?.peerName || globalConfig.peerName || null,
         enabled: globalConfig.enabled ?? false,
         workspace: stHost?.workspace || globalConfig.workspace || null,
@@ -209,9 +220,9 @@ function honchoMiddleware(req, res, next) {
         const manager = new SecretManager(req.user.directories);
         let apiKey = manager.readSecret(SECRET_KEYS.HONCHO);
 
-        // Fall back to global config API key
-        if (!apiKey && globalConfig?.apiKey) {
-            apiKey = globalConfig.apiKey;
+        // Fall back to host-scoped key, then root-level key
+        if (!apiKey) {
+            apiKey = globalConfig?.hosts?.sillytavern?.apiKey || globalConfig?.apiKey || null;
         }
 
         if (!apiKey) {
@@ -392,7 +403,8 @@ export async function init(router) {
             for (const msg of messages) {
                 if (!msg.peerId || !msg.content) continue;
                 const peer = await client.peer(msg.peerId);
-                messageInputs.push(peer.message(msg.content));
+                const content = truncate(msg.content, MESSAGE_CHAR_LIMIT, `message from ${msg.peerId}`);
+                messageInputs.push(peer.message(content));
             }
 
             if (messageInputs.length === 0) {
@@ -422,7 +434,8 @@ export async function init(router) {
                 opts.session = sessionId;
             }
 
-            const response = await peer.chat(query, opts);
+            const safeQuery = truncate(query, QUERY_CHAR_LIMIT, `dialectic query for ${peerId}`);
+            const response = await peer.chat(safeQuery, opts);
             return res.json({ response: response || '' });
         } catch (err) {
             return sendError(res, err, 'chat');
@@ -447,10 +460,11 @@ export async function init(router) {
             if (typeof summary === 'boolean') {
                 opts.summary = summary;
             }
-            // SDK requires the pair: peerPerspective (observer) + peerTarget (subject).
-            // The SDK rejects client-side if either is missing when the other is provided.
+            // Both peerPerspective and peerTarget are the user peer: we want
+            // the user's global representation (what Honcho knows about the user),
+            // not what the user thinks about the character.
             opts.peerPerspective = userPeerId;
-            opts.peerTarget = charPeerId;
+            opts.peerTarget = userPeerId;
 
             const context = await session.context(opts);
 
