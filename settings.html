@@ -16,6 +16,8 @@
 
                 <!-- Status indicator -->
                 <span id="honcho_status" class="honcho_status not-ready">Not configured</span>
+                <br />
+                <span id="honcho_config_source" class="honcho_config_source" style="display:none; font-size: 0.85em; opacity: 0.6;"></span>
 
                 <hr />
 
@@ -46,40 +48,82 @@
 
                 <hr />
 
-                <!-- Context Mode -->
-                <span class="honcho_section_label">Context Mode</span>
+                <!-- Session Naming -->
+                <span class="honcho_section_label">Session Naming</span>
                 <div class="radio_group">
                     <label>
-                        <input type="radio" name="honcho_context_mode" value="prefetch" />
-                        <span>Pre-fetch</span>
-                        <i class="fa-solid fa-info-circle" title="Query Honcho before generation and inject the result into the prompt."></i>
+                        <input type="radio" name="honcho_session_naming" value="auto" />
+                        <span>Auto</span>
+                        <i class="fa-solid fa-info-circle" title="charName-YYYY-MM-DD-hash (one session per ST chat)"></i>
                     </label>
                     <label>
-                        <input type="radio" name="honcho_context_mode" value="tool_call" />
-                        <span>Tool call</span>
-                        <i class="fa-solid fa-info-circle" title="Register a function tool the LLM can call to query Honcho memory on demand."></i>
+                        <input type="radio" name="honcho_session_naming" value="character" />
+                        <span>Per character</span>
+                        <i class="fa-solid fa-info-circle" title="One persistent session per character (all chats shared)"></i>
                     </label>
                     <label>
-                        <input type="radio" name="honcho_context_mode" value="context" />
-                        <span>Context()</span>
-                        <i class="fa-solid fa-info-circle" title="Use Honcho's session context endpoint to get a summarized context window."></i>
+                        <input type="radio" name="honcho_session_naming" value="custom" />
+                        <span>Custom</span>
+                        <i class="fa-solid fa-info-circle" title="Set your own session name"></i>
                     </label>
                 </div>
 
-                <!-- Pre-fetch settings (shown when prefetch mode) -->
-                <div id="honcho_prefetch_section" class="honcho_section">
-                    <label for="honcho_prefetch_queries">Queries (one per line)</label>
-                    <textarea id="honcho_prefetch_queries" class="text_pole textarea_compact" rows="3" placeholder="What does the user like?&#10;What is the user's personality?"></textarea>
+                <div id="honcho_custom_session_section" class="honcho_section">
+                    <label for="honcho_custom_session">Session name</label>
+                    <input id="honcho_custom_session" type="text" class="text_pole" placeholder="e.g. my-session-name" />
                 </div>
 
-                <!-- Context() settings (shown when context mode) -->
-                <div id="honcho_context_section" class="honcho_section">
+                <!-- Current session (editable to rename) -->
+                <div id="honcho_active_session_section" class="honcho_section">
+                    <label>Active session</label>
+                    <input id="honcho_active_session" type="text" class="text_pole" placeholder="No active session" />
+                </div>
+
+                <hr />
+
+                <!-- Context Settings (always visible — base layer for all modes) -->
+                <span class="honcho_section_label">Context</span>
+                <div class="honcho_section">
                     <label for="honcho_context_tokens">Token budget</label>
                     <input id="honcho_context_tokens" type="number" class="text_pole" min="100" max="10000" value="2000" />
+                    <label for="honcho_context_interval">Refresh every N turns</label>
+                    <input id="honcho_context_interval" type="number" class="text_pole" min="1" max="100" value="1" />
+                    <i class="fa-solid fa-info-circle" style="opacity: 0.6; font-size: 0.85em;" title="Always fetched on session start. Cached results served instantly between refreshes (stale-while-revalidate)."></i>
                     <label class="checkbox_label" for="honcho_context_summary">
                         <input type="checkbox" id="honcho_context_summary" />
                         <span>Include session summary</span>
                     </label>
+                </div>
+
+                <hr />
+
+                <!-- Enrichment Mode -->
+                <span class="honcho_section_label">Enrichment Mode</span>
+                <div class="radio_group">
+                    <label>
+                        <input type="radio" name="honcho_context_mode" value="context" />
+                        <span>Context only</span>
+                        <i class="fa-solid fa-info-circle" title="Peer representation and session summary only."></i>
+                    </label>
+                    <label>
+                        <input type="radio" name="honcho_context_mode" value="reasoning" />
+                        <span>Reasoning</span>
+                        <i class="fa-solid fa-info-circle" title="Context + dialectic reasoning queries on an interval."></i>
+                    </label>
+                    <label>
+                        <input type="radio" name="honcho_context_mode" value="tool_call" />
+                        <span>Tool call</span>
+                        <i class="fa-solid fa-info-circle" title="Context + function tools the LLM can call on demand."></i>
+                    </label>
+                </div>
+
+                <!-- Reasoning settings (shown when reasoning mode) -->
+                <div id="honcho_prefetch_section" class="honcho_section">
+                    <label for="honcho_prefetch_queries">Reasoning queries (one per line)</label>
+                    <textarea id="honcho_prefetch_queries" class="text_pole textarea_compact" rows="3" placeholder="Use {{message}} for the user's last message&#10;e.g. Based on: &quot;{{message}}&quot;, what's relevant about the user?"></textarea>
+                    <label for="honcho_prefetch_interval">Reason every N turns</label>
+                    <input id="honcho_prefetch_interval" type="number" class="text_pole" min="1" max="100" value="8" />
+                    <i class="fa-solid fa-info-circle" style="opacity: 0.6; font-size: 0.85em;" title="Always runs on session start. Cached results served instantly between refreshes."></i>
                 </div>
 
                 <hr />

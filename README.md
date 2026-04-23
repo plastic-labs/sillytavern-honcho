@@ -1,269 +1,168 @@
-# Honcho Memory Integration for SillyTavern
+# Honcho Memory for SillyTavern
 
-## Implementation Report
+Persistent, personalized memory for SillyTavern AI characters via [Honcho](https://honcho.dev).
 
-### What Was Built
+## Install
 
-A two-part integration that gives SillyTavern AI characters persistent, personalized memory about users via Honcho:
+From your SillyTavern directory:
 
-1. **Client-side extension** (browser) — hooks into SillyTavern's event system to inject Honcho context into prompts and store conversation messages
-2. **Server-side plugin** (Node.js) — proxies requests from the extension to the Honcho API using the `@honcho-ai/sdk` v2
-
-### Architecture
-
-```
-Browser (Extension)                          Server (Plugin)
-┌──────────────────────┐                    ┌──────────────────────────────┐
-│ index.js             │   fetch()          │ plugin/index.js              │
-│                      │ ────────────────── │                              │
-│ - Settings UI        │ /api/plugins/      │ - Express router             │
-│ - Event hooks        │  honcho-proxy/...  │ - Honcho SDK (@honcho-ai/sdk)│
-│ - Prompt injection   │                    │ - API key from secrets store │
-│ - Tool registration  │                    │ - Client caching             │
-└──────────────────────┘                    └──────────────────────────────┘
+**macOS / Linux:**
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/plastic-labs/sillytavern-honcho/main/install.sh)
 ```
 
----
-
-## Files Created
-
-### New Repo: `sillytavern-honcho/`
-
-| File                  | Lines | Purpose                             |
-| --------------------- | ----- | ----------------------------------- |
-| `manifest.json`       | 11    | SillyTavern extension manifest      |
-| `index.js`            | 449   | Client-side extension logic         |
-| `settings.html`       | 113   | Settings UI (inline-drawer pattern) |
-| `style.css`           | 34    | Minimal styling                     |
-| `plugin/index.js`     | 217   | Server-side Honcho proxy (5 routes) |
-| `plugin/package.json` | 10    | ESM module, `@honcho-ai/sdk` dep    |
-| `.gitignore`          | 2     | Ignores node_modules                |
-
-### SillyTavern Core Changes (tiny — 3 lines across 2 files)
-
-**`src/endpoints/secrets.js`** — Added to SECRET_KEYS:
-
-```javascript
-HONCHO: 'api_key_honcho',
+**Windows (PowerShell):**
+```powershell
+irm https://raw.githubusercontent.com/plastic-labs/sillytavern-honcho/main/install.ps1 | iex
 ```
 
-**`public/scripts/secrets.js`** — Added to SECRET_KEYS + FRIENDLY_NAMES:
+Then restart SillyTavern.
 
-```javascript
-HONCHO: 'api_key_honcho',
-// ...
-[SECRET_KEYS.HONCHO]: 'Honcho AI',
-```
+> **Internal reviewers / pre-public:** the URL above 404s while the repo is private. Use the local-clone install path in [CONTRIBUTING.md](CONTRIBUTING.md).
 
----
+### What the script does
 
-## How It Works
-
-### Event Flow
-
-| SillyTavern Event            | Handler          | What Happens                                                                       |
-| ---------------------------- | ---------------- | ---------------------------------------------------------------------------------- |
-| `CHAT_CHANGED`               | `onChatChanged`  | Creates/gets Honcho session + peers, stores IDs in `chat_metadata.honcho`          |
-| `GENERATION_AFTER_COMMANDS`  | `onGeneration`   | Queries Honcho for context and injects it into the prompt via `setExtensionPrompt` |
-| `MESSAGE_SENT`               | `onMessageSent`  | Stores the user's message in the Honcho session                                    |
-| `CHARACTER_MESSAGE_RENDERED` | `onCharResponse` | Stores the AI's response in the Honcho session (runs last via `makeLast`)          |
-
-### Context Modes
-
-1. **Pre-fetch** (default) — Before each generation, runs configurable queries against `peer.chat()` and injects combined results into the system prompt
-2. **Tool call** — Registers `honcho_query_memory` as a function tool the LLM can invoke on demand
-3. **Context()** — Uses Honcho's `session.context()` endpoint with configurable token budget and summary toggle
-
-### Peer Modes
-
-- **Single peer** — One user peer (`st-user-{name}`) shared across all personas
-- **Per-persona** — Uses `user_avatar` filename as peer ID, so each persona gets isolated memory
-
-### Server Plugin Routes
-
-| Route                    | Body                                                        | Purpose                    |
-| ------------------------ | ----------------------------------------------------------- | -------------------------- |
-| `POST /peer`             | `{ workspaceId, peerId, observeMe }`                        | Create/get a Honcho peer   |
-| `POST /session`          | `{ workspaceId, sessionId, userPeerId, charPeerId }`        | Create session + add peers |
-| `POST /session/messages` | `{ workspaceId, sessionId, messages[] }`                    | Store messages             |
-| `POST /chat`             | `{ workspaceId, peerId, query, sessionId? }`                | Dialectic chat query       |
-| `POST /context`          | `{ workspaceId, sessionId, userPeerId, tokens?, summary? }` | Get session context        |
-
-All routes go through middleware that reads the Honcho API key from SillyTavern's secrets store (`req.user.directories` → `SecretManager`).
-
-### Notable Implementation Details
-
-- **Symlink-safe imports**: The plugin uses `process.cwd()` + `pathToFileURL()` to dynamically import SillyTavern's secrets module, since Node.js resolves symlinks to their real paths before resolving relative imports
-- **Client caching**: Honcho SDK clients are cached by `workspaceId:apiKeyLast8` to avoid re-initialization on every request
-- **Race protection**: `sessionSetupInProgress` flag prevents double-init when `CHAT_CHANGED` fires multiple times
-- **Swipe handling**: `onCharResponse` only stores the message if it's the latest in the chat (skips swiped-away responses)
-- **Graceful failure**: All Honcho errors are caught and logged — they never block generation
-
----
-
-## Testing Guide
+1. Clones this repo into `public/scripts/extensions/third-party/sillytavern-honcho`
+2. Symlinks the server plugin to `plugins/honcho-proxy`
+3. Installs the `@honcho-ai/sdk` dependency
+4. Checks that `enableServerPlugins: true` is set in `config.yaml`
+5. Detects your `~/.honcho/config.json` if it exists
 
 ### Prerequisites
 
-1. A Honcho API key from https://app.honcho.dev
-2. Your Honcho workspace ID
-3. SillyTavern running locally (this was built against the `staging` branch)
-
-### Setup Steps
-
-#### 1. Enable Server Plugins
-
-Edit your SillyTavern `config.yaml` (create one by copying `default/config.yaml` if it doesn't exist):
-
-```yaml
-enableServerPlugins: true
-```
-
-#### 2. Symlink the Plugin
-
-If you cloned the repo separately (not via SillyTavern's extension installer):
-
-```bash
-# From SillyTavern root:
-ln -s /path/to/sillytavern-honcho/plugin plugins/honcho-proxy
-ln -s /path/to/sillytavern-honcho public/scripts/extensions/third-party/sillytavern-honcho
-```
-
-These symlinks already exist if the implementation was done in-place.
-
-#### 3. Install Plugin Dependencies
-
-```bash
-cd plugins/honcho-proxy
-npm install
-```
-
-#### 4. Start SillyTavern
-
-```bash
-node server.js
-# or
-npm start
-```
-
-**Check console for**: `[honcho-proxy] Honcho SDK loaded successfully` followed by `[honcho-proxy] Plugin initialized with 5 routes`
-
-If you see `@honcho-ai/sdk not found`, the npm install in step 3 didn't work.
-
-### Verification Checklist
-
-#### A. Plugin Loading
-
-- [ ] Start SillyTavern and confirm `[honcho-proxy] Plugin initialized with 5 routes` appears in the server console
-
-#### B. Extension Settings
-
-- [ ] Open SillyTavern in your browser
-- [ ] Go to Extensions panel (puzzle piece icon)
-- [ ] Find "Honcho Memory" drawer and expand it
-- [ ] Status should show "Not ready: disabled, no workspace ID, no API key"
-- [ ] Check "Enable Honcho Memory"
-- [ ] Click the API key field → set your Honcho API key
-- [ ] Enter your workspace ID
-- [ ] Status should change to "Ready"
-
-#### C. Session Creation
-
-- [ ] Open any chat with a character
-- [ ] Open browser DevTools console (F12)
-- [ ] Look for `[Honcho] Session ready for chat: <chat-id>`
-- [ ] Verify `chat_metadata.honcho` exists:
-  ```javascript
-  // In browser console:
-  JSON.stringify(SillyTavern.getContext().chat_metadata.honcho);
+- [SillyTavern](https://github.com/SillyTavern/SillyTavern) running locally
+- A Honcho API key from [app.honcho.dev](https://app.honcho.dev)
+- Server plugins enabled in `config.yaml`:
+  ```yaml
+  enableServerPlugins: true
   ```
-  Should return something like:
-  ```json
-  {
-    "sessionId": "char_name_chat_id",
-    "userPeerId": "st-user-User",
-    "charPeerId": "char_avatar.png"
+
+## Configuration
+
+### Extension settings
+
+Open Extensions (puzzle piece icon) and expand **Honcho Memory**:
+
+1. Check **Enable Honcho Memory**
+2. Click the API key field to set your key
+3. Enter your workspace ID
+4. Status indicator should show **Ready**
+
+### Global config (for multi-tool setups)
+
+`~/.honcho/config.json` is a shared config file that other Honcho integrations (Claude Code, Cursor, Hermes) write when you first set them up. If the file already exists when you install this extension, the server plugin reads it on startup.
+
+**Resolution order** (plugin-side, on startup):
+
+1. `hosts.sillytavern.apiKey` (nested, host-specific)
+2. root-level `apiKey` (flat fallback)
+3. If neither resolves → plugin falls through; you must enter the key via the Extensions panel
+
+**Precedence against the Extensions panel key:** the Extensions-panel key (SillyTavern's secret manager) takes priority at request time — the plugin checks `SECRET_KEYS.HONCHO` first, then falls back to the global-config key. So entering a key in the UI overrides the file without touching it.
+
+Example `~/.honcho/config.json` the plugin accepts:
+
+```json
+{
+  "apiKey": "your-honcho-api-key",
+  "peerName": "your-name",
+  "workspace": "sillytavern",
+  "enabled": true
+}
+```
+
+Nested form (when multiple tools share the file):
+
+```json
+{
+  "hosts": {
+    "sillytavern": {
+      "apiKey": "your-honcho-api-key",
+      "workspace": "sillytavern"
+    }
   }
-  ```
-
-#### D. Message Storage
-
-- [ ] Send a message in the chat
-- [ ] Check server console for any errors on `POST /session/messages`
-- [ ] Wait for AI response
-- [ ] Check server console again — both user and AI messages should be stored
-
-#### E. Pre-fetch Context Injection
-
-- [ ] Ensure context mode is set to "Pre-fetch" (default)
-- [ ] Add a query like "What do you know about the user?" in the queries textarea
-- [ ] Send a few messages to build up some conversation history
-- [ ] On next generation, check browser console for Honcho context injection
-- [ ] To inspect the injected prompt, use SillyTavern's Prompt Manager (if available) or check:
-  ```javascript
-  // In browser console:
-  SillyTavern.getContext().extensionPrompts.honcho;
-  ```
-
-#### F. Tool Call Mode
-
-- [ ] Switch context mode to "Tool call" in settings
-- [ ] Ensure your selected LLM API supports function calling (OpenAI, Claude, etc.)
-- [ ] Start a generation — the `honcho_query_memory` tool should appear in the API request's function definitions
-- [ ] The LLM may or may not invoke it depending on the conversation context
-
-#### G. Context() Mode
-
-- [ ] Switch context mode to "Context()"
-- [ ] Set a token budget (default: 2000)
-- [ ] Toggle "Include session summary" as desired
-- [ ] Send a message — Honcho's session context will be fetched and injected
-
-#### H. Peer Mode
-
-- [ ] Switch between "Single peer" and "Separate peer per persona"
-- [ ] Change personas and open a new chat
-- [ ] Check `chat_metadata.honcho.userPeerId` — it should change based on the mode:
-  - Single: `st-user-{name}` (stable)
-  - Per-persona: persona avatar filename
-
-#### I. Group Chats
-
-- [ ] Open a group chat
-- [ ] Check that `chat_metadata.honcho.charPeerId` is `group-{groupId}`
-
-### Troubleshooting
-
-| Symptom                            | Cause                         | Fix                                                                                         |
-| ---------------------------------- | ----------------------------- | ------------------------------------------------------------------------------------------- |
-| No "Honcho Memory" in Extensions   | Extension not discovered      | Verify symlink: `ls public/scripts/extensions/third-party/sillytavern-honcho/manifest.json` |
-| Plugin not initializing            | `enableServerPlugins` not set | Add `enableServerPlugins: true` to `config.yaml` and restart                                |
-| 403 on all plugin requests         | No API key configured         | Set the Honcho API key via the extension settings UI                                        |
-| 404 on plugin requests             | Plugin not loaded             | Check server logs at startup; verify symlink in `plugins/`                                  |
-| SDK import error                   | Dependencies not installed    | Run `cd plugins/honcho-proxy && npm install`                                                |
-| Extension loads but no events fire | Extension disabled            | Check the "Enable" checkbox and ensure workspace ID is set                                  |
-| Messages not stored                | Session not initialized       | Open DevTools, check for `[Honcho] Session ready` log on chat open                          |
-
-### File Locations Reference
-
+}
 ```
-SillyTavern/
-├── config.yaml                                          ← enableServerPlugins: true
-├── plugins/
-│   └── honcho-proxy -> .../sillytavern-honcho/plugin/   ← symlink
-├── public/scripts/
-│   ├── secrets.js                                       ← HONCHO key added
-│   └── extensions/third-party/
-│       └── sillytavern-honcho -> .../sillytavern-honcho/ ← symlink
-└── src/endpoints/
-    └── secrets.js                                       ← HONCHO key added
 
-sillytavern-honcho/                                      ← new repo
-├── manifest.json
-├── index.js                                             ← client extension
-├── settings.html
-├── style.css
-└── plugin/
-    ├── package.json
-    └── index.js                                         ← server plugin
+## How it works
+
+The extension has two parts:
+
+- **Client extension** (browser) -- hooks into SillyTavern events to inject memory context and store messages
+- **Server plugin** (Node.js) -- proxies requests to the Honcho API
+
+### Peer observability
+
+By default, only the user peer accumulates derived memory — Honcho observes the user's messages and derives conclusions about them across sessions. The AI character's persona comes from its character card, not from peer derivation. If you want the character to have its own Honcho-derived state, configure it as an additional peer in session setup (see the `/session` route in `plugin/index.js`).
+
+### Context modes
+
+Every generation injects the peer representation and session summary from `session.context()` as a base layer (stale-while-revalidate -- zero latency after first turn, configurable refresh interval). The enrichment mode controls what happens on top:
+
+| Mode | Behavior |
+| --- | --- |
+| **Context only** | Base layer only -- peer representation + session summary |
+| **Reasoning** (default) | Base layer + dialectic `peer.chat()` queries on an interval |
+| **Tool call** | Base layer + function tools the LLM can call on demand (query, save conclusion, search) |
+
+### Peer modes
+
+| Mode | Behavior |
+| --- | --- |
+| **Single peer** | One user peer shared across all personas |
+| **Per-persona** | Each persona gets its own isolated memory |
+
+### Event flow
+
+| Event | Action |
+| --- | --- |
+| Chat opened | Creates/gets Honcho session + peers |
+| Before generation | Injects memory context into prompt |
+| User sends message | Stores message in Honcho session |
+| AI responds | Stores response in Honcho session |
+
+## Architecture
+
+```text
+Browser (Extension)                     Server (Plugin)
++-----------------------+               +------------------------------+
+| index.js              |  fetch()      | plugin/index.js              |
+|                       | ------------> |                              |
+| - Settings UI         | /api/plugins/ | - Express router             |
+| - Event hooks         |  honcho-proxy | - Honcho SDK (@honcho-ai/sdk)|
+| - Prompt injection    |               | - API key from secrets or    |
+| - Tool registration   |               |   ~/.honcho/config.json      |
++-----------------------+               +------------------------------+
 ```
+
+## File structure
+
+```text
+sillytavern-honcho/
++-- manifest.json          Extension manifest
++-- index.js               Client extension
++-- settings.html          Settings panel
++-- style.css              Styles
++-- install.sh             Installer (macOS/Linux)
++-- install.ps1            Installer (Windows)
++-- plugin/
+|   +-- index.js           Server plugin (9 routes: 1 GET + 8 POST)
+|   +-- package.json       @honcho-ai/sdk dependency
+```
+
+## Troubleshooting
+
+| Symptom | Fix |
+| --- | --- |
+| No "Honcho Memory" in Extensions | Check symlink: `ls public/scripts/extensions/third-party/sillytavern-honcho/manifest.json` |
+| Plugin not initializing | Add `enableServerPlugins: true` to `config.yaml` and restart |
+| Just installed SillyTavern, plugin silent on first boot | SillyTavern creates `config.yaml` with `enableServerPlugins: false` by default on first launch. Flip it to `true` and restart. |
+| 403 on plugin requests | Set Honcho API key in extension settings or `~/.honcho/config.json` |
+| SDK import error | Run `cd plugins/honcho-proxy && npm install` |
+| Extension loads but nothing happens | Enable the checkbox and ensure workspace ID is set |
+| API key modal saves but status never turns Ready | SillyTavern core patches missing (`SECRET_KEYS.HONCHO` not registered upstream). Either apply the patches (see [CONTRIBUTING.md](CONTRIBUTING.md#core-patches)) or configure via `~/.honcho/config.json`. |
+
+## Development
+
+- For local-clone + symlink dev setup, see [CONTRIBUTING.md](CONTRIBUTING.md).
+- For Claude Code-assisted install, invoke the setup skill at [`skills/setup/SKILL.md`](skills/setup/SKILL.md).
