@@ -115,14 +115,19 @@ function settings() {
 /** Global config values fetched from ~/.honcho/config.json via the plugin */
 let globalConfigCache = null;
 
-// Resolution: hosts.sillytavern.peerName > ST persona (non-default) > local > root.
+// Resolution: hosts.sillytavern.peerName > (local if ignoreGlobalConfig) >
+//             ST persona (non-default) > local > root.
 function getUserPeerId() {
     const context = getContext();
     const override = globalConfigCache?.peerNameOverride || null;
     const stPersona = context.name1 && context.name1 !== 'User' ? context.name1 : null;
     const local = settings().peerName || null;
     const root = globalConfigCache?.peerName || null;
-    const explicit = override || stPersona || local || root;
+    const explicit = override
+        || (settings().ignoreGlobalConfig ? local : null)
+        || stPersona
+        || local
+        || root;
 
     if (explicit) {
         if (settings().peerMode === 'per_persona') {
@@ -892,7 +897,14 @@ function loadSettingsUI() {
     $('#honcho_enabled').prop('checked', s.enabled);
     $('#honcho_ignore_global_btn').text(s.ignoreGlobalConfig ? 'Enable global config' : 'Disable global config');
     $('#honcho_workspace_id').val(s.workspaceId);
-    $('#honcho_peer_name').val(globalConfigCache?.peerName || s.peerName || '');
+    // Prefill from the explicit override only — never from the resolved value
+    // (which could be inherited root peerName). Otherwise a blur would write
+    // that inherited value back as a sticky host override.
+    $('#honcho_peer_name').val(
+        s.ignoreGlobalConfig
+            ? (s.peerName || '')
+            : (globalConfigCache?.peerNameOverride || ''),
+    );
     $('#honcho_peer_name_hint').text(
         s.ignoreGlobalConfig
             ? 'Applies to new chats. Saved locally to this SillyTavern install.'
@@ -981,7 +993,7 @@ function bindSettingsListeners() {
         clearTimeout(workspaceSaveTimer);
         workspaceSaveTimer = setTimeout(saveWorkspace, 500);
     });
-    $('#honcho_workspace_id').on('change blur', function () {
+    $('#honcho_workspace_id').on('change', function () {
         clearTimeout(workspaceSaveTimer);
         saveWorkspace();
     });
@@ -1041,7 +1053,7 @@ function bindSettingsListeners() {
         clearTimeout(peerNameSaveTimer);
         peerNameSaveTimer = setTimeout(savePeerName, 500);
     });
-    $('#honcho_peer_name').on('change blur', function () {
+    $('#honcho_peer_name').on('change', function () {
         clearTimeout(peerNameSaveTimer);
         savePeerName();
     });
