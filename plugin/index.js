@@ -30,6 +30,34 @@ function truncate(text, limit, label) {
     return text.slice(0, limit);
 }
 
+// Split a long message at paragraph/sentence boundaries so nothing is lost to the
+// API cap. The 0.5 floor avoids pathologically small chunks when no boundary
+// exists near the limit.
+function chunkText(text, limit) {
+    if (typeof text !== 'string' || text.length <= limit) return [text];
+    const chunks = [];
+    let i = 0;
+    while (i < text.length) {
+        if (text.length - i <= limit) {
+            chunks.push(text.slice(i));
+            break;
+        }
+        let end = i + limit;
+        const para = text.lastIndexOf('\n\n', end);
+        if (para > i + limit * 0.5) {
+            end = para + 2;
+        } else {
+            const candidates = ['. ', '.\n', '! ', '? ', '\n']
+                .map(m => text.lastIndexOf(m, end))
+                .filter(idx => idx > i + limit * 0.5);
+            if (candidates.length > 0) end = Math.max(...candidates) + 2;
+        }
+        chunks.push(text.slice(i, end));
+        i = end;
+    }
+    return chunks;
+}
+
 /**
  * Load the global Honcho config from ~/.honcho/config.json.
  * Returns the parsed config or null if not found/invalid.
@@ -371,13 +399,20 @@ export async function init(router) {
             const client = await getClient(req.honchoApiKey, req.honchoWorkspaceId);
             const session = await client.session(sessionId);
 
-            // Build MessageInput objects via peer.message()
+            // Build MessageInput objects via peer.message(). Long turns are
+            // chunked at paragraph/sentence boundaries so nothing is lost to
+            // the 25k-char cap; chunks stay under the same peer in order.
             const messageInputs = [];
             for (const msg of messages) {
                 if (!msg.peerId || !msg.content) continue;
                 const peer = await client.peer(msg.peerId);
-                const content = truncate(msg.content, MESSAGE_CHAR_LIMIT, `message from ${msg.peerId}`);
-                messageInputs.push(peer.message(content));
+                const chunks = chunkText(msg.content, MESSAGE_CHAR_LIMIT);
+                if (chunks.length > 1) {
+                    console.log(`[honcho-proxy] Chunking ${msg.peerId} message: ${msg.content.length} chars → ${chunks.length} parts`);
+                }
+                for (const chunk of chunks) {
+                    messageInputs.push(peer.message(chunk));
+                }
             }
 
             if (messageInputs.length === 0) {
