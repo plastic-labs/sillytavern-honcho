@@ -143,7 +143,7 @@ function updateSTHost(updates, deletes = []) {
     for (const key of deletes) {
         delete globalConfig.hosts.sillytavern[key];
     }
-    saveGlobalConfig();
+    return saveGlobalConfig();
 }
 
 /**
@@ -315,7 +315,10 @@ export async function init(router) {
         }
 
         if (Object.keys(updates).length > 0 || deletes.length > 0) {
-            updateSTHost(updates, deletes);
+            const saved = updateSTHost(updates, deletes);
+            if (!saved) {
+                return res.status(500).json({ ok: false, error: 'Failed to persist global config' });
+            }
         }
 
         return res.json({ ok: true, host: { ...globalConfig?.hosts?.sillytavern, apiKey: undefined } });

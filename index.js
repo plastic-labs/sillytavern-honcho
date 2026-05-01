@@ -1270,21 +1270,38 @@ function bindSettingsListeners() {
             if (confirmed !== POPUP_RESULT.AFFIRMATIVE) return;
         }
 
-        const resp = await fetch(`${PLUGIN_BASE}/config/update`, {
-            method: 'POST',
-            headers: getRequestHeaders(),
-            body: JSON.stringify({ apiKey: trimmed || null }),
-        });
+        let resp;
+        try {
+            resp = await fetch(`${PLUGIN_BASE}/config/update`, {
+                method: 'POST',
+                headers: getRequestHeaders(),
+                body: JSON.stringify({ apiKey: trimmed || null }),
+            });
+        } catch (err) {
+            console.warn(`[Honcho] API key save failed: ${err.message}`);
+            toastr.error('Failed to save Honcho API key (network error)');
+            return;
+        }
         if (!resp.ok) {
             console.warn(`[Honcho] API key save failed (${resp.status})`);
             toastr.error(`Failed to save Honcho API key (${resp.status})`);
             return;
         }
-        const fresh = await fetch(`${PLUGIN_BASE}/config`, {
-            method: 'GET',
-            headers: getRequestHeaders(),
-        });
-        if (fresh.ok) globalConfigCache = await fresh.json();
+
+        // Refresh from disk; if that fails, optimistically reflect the saved
+        // state locally so the UI doesn't drift from what the plugin persisted.
+        try {
+            const fresh = await fetch(`${PLUGIN_BASE}/config`, {
+                method: 'GET',
+                headers: getRequestHeaders(),
+            });
+            if (fresh.ok) globalConfigCache = await fresh.json();
+            else throw new Error(`status ${fresh.status}`);
+        } catch (err) {
+            console.warn(`[Honcho] Config refresh failed: ${err.message}`);
+            globalConfigCache = { ...(globalConfigCache || {}), found: true, hasApiKey: !!trimmed };
+        }
+
         updateStatusIndicator();
         toastr.success(trimmed ? 'Honcho API key saved' : 'Honcho API key cleared');
     };
