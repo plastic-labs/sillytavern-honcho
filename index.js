@@ -1252,18 +1252,32 @@ function bindSettingsListeners() {
     });
 
     const openApiKeyDialog = async () => {
-        const key = await Popup.show.input('Honcho API Key', 'Paste your Honcho API key:', '', {
+        const raw = await Popup.show.input('Honcho API Key', 'Paste your Honcho API key:', '', {
             okButton: 'Save',
             cancelButton: 'Cancel',
         });
-        if (key === null) return;
+        if (raw === null) return;
+        const trimmed = raw.trim();
+
+        if (!trimmed) {
+            if (!globalConfigCache?.hasApiKey) return;
+            const confirmed = await callGenericPopup(
+                'Clear the saved Honcho API key?',
+                POPUP_TYPE.CONFIRM,
+                '',
+                { okButton: 'Clear', cancelButton: 'Cancel' },
+            );
+            if (confirmed !== POPUP_RESULT.AFFIRMATIVE) return;
+        }
+
         const resp = await fetch(`${PLUGIN_BASE}/config/update`, {
             method: 'POST',
             headers: getRequestHeaders(),
-            body: JSON.stringify({ apiKey: key || null }),
+            body: JSON.stringify({ apiKey: trimmed || null }),
         });
         if (!resp.ok) {
             console.warn(`[Honcho] API key save failed (${resp.status})`);
+            toastr.error(`Failed to save Honcho API key (${resp.status})`);
             return;
         }
         const fresh = await fetch(`${PLUGIN_BASE}/config`, {
@@ -1272,6 +1286,7 @@ function bindSettingsListeners() {
         });
         if (fresh.ok) globalConfigCache = await fresh.json();
         updateStatusIndicator();
+        toastr.success(trimmed ? 'Honcho API key saved' : 'Honcho API key cleared');
     };
     $('#honcho_api_key, #honcho_api_key_btn').on('click', openApiKeyDialog);
 
@@ -1289,17 +1304,16 @@ jQuery(async () => {
     }
     extension_settings.honcho = Object.assign({}, defaultSettings, extension_settings.honcho);
 
-    // Auto-populate from ~/.honcho/config.json unless opted out.
-    if (!extension_settings.honcho?.ignoreGlobalConfig) try {
+    // Always populate the cache so the UI reflects real key/workspace state;
+    // ignoreGlobalConfig only gates auto-merging values into local settings.
+    try {
         const configResp = await fetch(`${PLUGIN_BASE}/config`, {
             method: 'GET',
             headers: getRequestHeaders(),
         });
         if (configResp.ok) {
-            // Cache regardless of found — syncSTPersonaToGlobal uses the
-            // response shape to decide whether bootstrapping is needed.
             globalConfigCache = await configResp.json();
-            if (globalConfigCache.found) {
+            if (globalConfigCache.found && !extension_settings.honcho?.ignoreGlobalConfig) {
                 let changed = false;
 
                 if (!settings().workspaceId && globalConfigCache.workspace) {
