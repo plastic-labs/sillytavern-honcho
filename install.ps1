@@ -60,10 +60,16 @@ if (Test-Path $PLUGIN_DIR) {
 }
 
 # 3. Install SDK dependencies
+$npmCmdInfo = Get-Command npm.cmd -ErrorAction SilentlyContinue
+if (-not $npmCmdInfo) {
+    Write-Host "[!] npm was not found on PATH. Install Node.js, reopen PowerShell, and retry."
+    exit 1
+}
+$npmCmd = $npmCmdInfo.Source
 Write-Host "[*] Installing @honcho-ai/sdk..."
 Push-Location $PLUGIN_DIR
-$null = npm install --silent 2>&1
-$npmExit = $LASTEXITCODE
+$null = & $npmCmd install --silent 2>&1
+$npmExit = if ($?) { $LASTEXITCODE } else { 1 }
 Pop-Location
 if ($npmExit -ne 0) {
     Write-Host "[!] npm install failed (exit $npmExit)."
@@ -80,7 +86,7 @@ if (-not (Test-Path $CONFIG)) {
     Write-Host "[*] Generating config.yaml by starting SillyTavern briefly..."
     $bootLog = Join-Path $env:TEMP "silly-first-launch-$([System.IO.Path]::GetRandomFileName()).log"
     $bootErr = "$bootLog.err"
-    $stProc = Start-Process -FilePath "npm.cmd" -ArgumentList "start" `
+    $stProc = Start-Process -FilePath $npmCmd -ArgumentList "start" `
         -WorkingDirectory $ST_DIR -WindowStyle Hidden -PassThru `
         -RedirectStandardOutput $bootLog -RedirectStandardError $bootErr
     for ($i = 0; $i -lt 60; $i++) {
@@ -125,17 +131,21 @@ if ($content -match "(?m)^enableServerPlugins:[ \t]*true") {
 # 5. Probe global Honcho config for a resolvable apiKey
 $HONCHO_CONFIG = Join-Path $HOME ".honcho\config.json"
 if (Test-Path $HONCHO_CONFIG) {
-    # File existence alone would falsely promise auto-population when no key resolves.
     $resolvableKey = $false
+    $parseFailed = $false
     try {
         $cfg = Get-Content -Path $HONCHO_CONFIG -Raw | ConvertFrom-Json
         $hostKey = $cfg.hosts.sillytavern.apiKey
         $rootKey = $cfg.apiKey
         if ($hostKey -or $rootKey) { $resolvableKey = $true }
     } catch {
-        # Malformed JSON — treat as no resolvable key
+        $parseFailed = $true
     }
-    if ($resolvableKey) {
+    if ($parseFailed) {
+        Write-Host "[!] Found malformed Honcho config at $HONCHO_CONFIG"
+        Write-Host "    Fix or remove it before re-running, or the plugin may recreate a minimal config and wipe existing settings."
+        exit 1
+    } elseif ($resolvableKey) {
         Write-Host "[*] Found global Honcho config with resolvable apiKey at $HONCHO_CONFIG"
         Write-Host "    API key, workspace, and peer name will be auto-populated."
     } else {
