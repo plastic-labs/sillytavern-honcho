@@ -1,11 +1,6 @@
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
-import { pathToFileURL } from 'node:url';
-
-// Dynamic import from SillyTavern's source (resolves from process.cwd(), not symlink target)
-const secretsPath = pathToFileURL(path.join(process.cwd(), 'src', 'endpoints', 'secrets.js')).href;
-const { SecretManager, SECRET_KEYS } = await import(secretsPath);
 
 export const info = {
     id: 'honcho-proxy',
@@ -228,42 +223,26 @@ function sendError(res, err, route) {
  * and validate request body.
  */
 function honchoMiddleware(req, res, next) {
-    // Skip middleware for config endpoints
     if (req.path === '/config' || req.path === '/config/update') return next();
 
-    try {
-        const manager = new SecretManager(req.user.directories);
-        let apiKey = manager.readSecret(SECRET_KEYS.HONCHO);
-
-        // Fall back to host-scoped key, then root-level key
-        if (!apiKey) {
-            apiKey = globalConfig?.hosts?.sillytavern?.apiKey || globalConfig?.apiKey || null;
-        }
-
-        if (!apiKey) {
-            return res.status(403).json({ error: 'Honcho API key not configured. Set it in SillyTavern API Connections or ~/.honcho/config.json.' });
-        }
-
-        // workspaceId from request body, or fall back to global config
-        let workspaceId = req.body?.workspaceId;
-        if (!workspaceId) {
-            const stConfig = getGlobalConfigForST();
-            workspaceId = stConfig?.workspace;
-        }
-
-        if (!workspaceId) {
-            return res.status(400).json({ error: 'workspaceId is required (set in extension settings or ~/.honcho/config.json)' });
-        }
-
-        req.honchoApiKey = apiKey;
-        req.honchoWorkspaceId = workspaceId;
-        next();
-    } catch (err) {
-        console.error('[honcho-proxy] Middleware error:', err.message);
-        // Genuine 500 — local secret-read failure, not an SDK/upstream error.
-        // Don't route through statusFromSdkError (no err.status to map).
-        return res.status(500).json({ error: 'Failed to read Honcho API key' });
+    const apiKey = globalConfig?.hosts?.sillytavern?.apiKey || globalConfig?.apiKey || null;
+    if (!apiKey) {
+        return res.status(403).json({ error: 'Honcho API key not configured. Set it via the extension UI or in ~/.honcho/config.json.' });
     }
+
+    let workspaceId = req.body?.workspaceId;
+    if (!workspaceId) {
+        const stConfig = getGlobalConfigForST();
+        workspaceId = stConfig?.workspace;
+    }
+
+    if (!workspaceId) {
+        return res.status(400).json({ error: 'workspaceId is required (set in extension settings or ~/.honcho/config.json)' });
+    }
+
+    req.honchoApiKey = apiKey;
+    req.honchoWorkspaceId = workspaceId;
+    next();
 }
 
 /**
@@ -303,16 +282,9 @@ export async function init(router) {
             return res.json({ found: false });
         }
 
-        // Check if ST secrets store has an API key
-        let hasSecretKey = false;
-        try {
-            const manager = new SecretManager(req.user.directories);
-            hasSecretKey = !!manager.readSecret(SECRET_KEYS.HONCHO);
-        } catch { /* ignore */ }
-
         return res.json({
             found: true,
-            hasApiKey: !!(stConfig.apiKey || hasSecretKey),
+            hasApiKey: !!stConfig.apiKey,
             workspace: stConfig.workspace,
             peerName: stConfig.peerName,
             peerNameOverride: globalConfig?.hosts?.sillytavern?.peerName || null,
@@ -324,12 +296,11 @@ export async function init(router) {
     // POST /config/update — Update hosts.sillytavern in global config.
     // updateSTHost bootstraps the config file if it doesn't exist yet.
     router.post('/config/update', (req, res) => {
-        const { aiPeer, workspace, peerName } = req.body;
+        const { aiPeer, workspace, peerName, apiKey } = req.body;
         const updates = {};
         const deletes = [];
 
         if (aiPeer) updates.aiPeer = aiPeer;
-        // workspace & peerName: empty string / null clears the override (falls back to root)
         if (workspace !== undefined) {
             if (workspace) updates.workspace = workspace;
             else deletes.push('workspace');
@@ -338,12 +309,16 @@ export async function init(router) {
             if (peerName) updates.peerName = peerName;
             else deletes.push('peerName');
         }
+        if (apiKey !== undefined) {
+            if (apiKey) updates.apiKey = apiKey;
+            else deletes.push('apiKey');
+        }
 
         if (Object.keys(updates).length > 0 || deletes.length > 0) {
             updateSTHost(updates, deletes);
         }
 
-        return res.json({ ok: true, host: globalConfig?.hosts?.sillytavern });
+        return res.json({ ok: true, host: { ...globalConfig?.hosts?.sillytavern, apiKey: undefined } });
     });
 
     // POST /peer — Create or get a peer

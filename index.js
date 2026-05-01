@@ -19,10 +19,9 @@ import {
     renderExtensionTemplateAsync,
     saveMetadataDebounced,
 } from '../../../extensions.js';
-import { SECRET_KEYS, secret_state } from '../../../secrets.js';
 import { selected_group, groups } from '../../../group-chats.js';
 import { oai_settings } from '../../../openai.js';
-import { callGenericPopup, POPUP_TYPE, POPUP_RESULT } from '../../../popup.js';
+import { callGenericPopup, POPUP_TYPE, POPUP_RESULT, Popup } from '../../../popup.js';
 
 const MODULE_NAME = 'honcho';
 const PLUGIN_BASE = '/api/plugins/honcho-proxy';
@@ -100,11 +99,10 @@ function resetCaches() {
 }
 
 function isReady() {
-    const hasApiKey = secret_state[SECRET_KEYS.HONCHO] || globalConfigCache?.hasApiKey;
     return (
         extension_settings.honcho?.enabled &&
         extension_settings.honcho?.workspaceId &&
-        hasApiKey
+        globalConfigCache?.hasApiKey
     );
 }
 
@@ -910,13 +908,9 @@ function registerHonchoTools() {
 
 function updateStatusIndicator() {
     const $status = $('#honcho_status');
-    const hasKey = !!(secret_state[SECRET_KEYS.HONCHO] || globalConfigCache?.hasApiKey);
+    const hasKey = !!globalConfigCache?.hasApiKey;
 
-    // BUG-6 fix: swap API-key placeholder so users get feedback on the input
-    // itself after save, not only in the #honcho_status line below. The input
-    // is SillyTavern's manage-api-keys pattern (maxlength=0, readonly), so we
-    // can't set a value — but the placeholder IS the visible text.
-    $('#honcho_api_key').attr('placeholder', hasKey ? 'Key set — click to change' : 'Click to set key');
+    $('#honcho_api_key').attr('placeholder', hasKey ? '✔️ Key saved' : 'Click to set key');
 
     if (isReady()) {
         $status.text('Ready').removeClass('not-ready').addClass('ready');
@@ -996,7 +990,7 @@ function loadSettingsUI() {
 
     if (!s.ignoreGlobalConfig && globalConfigCache?.found) {
         const source = [];
-        if (globalConfigCache.hasApiKey && !secret_state[SECRET_KEYS.HONCHO]) {
+        if (globalConfigCache.hasApiKey) {
             source.push('API key');
         }
         if (globalConfigCache.workspace && s.workspaceId === globalConfigCache.workspace) {
@@ -1257,9 +1251,29 @@ function bindSettingsListeners() {
         saveSettingsDebounced();
     });
 
-    // React to API key changes
-    eventSource.on(event_types.SECRET_WRITTEN, () => updateStatusIndicator());
-    eventSource.on(event_types.SECRET_DELETED, () => updateStatusIndicator());
+    const openApiKeyDialog = async () => {
+        const key = await Popup.show.input('Honcho API Key', 'Paste your Honcho API key:', '', {
+            okButton: 'Save',
+            cancelButton: 'Cancel',
+        });
+        if (key === null) return;
+        const resp = await fetch(`${PLUGIN_BASE}/config/update`, {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ apiKey: key || null }),
+        });
+        if (!resp.ok) {
+            console.warn(`[Honcho] API key save failed (${resp.status})`);
+            return;
+        }
+        const fresh = await fetch(`${PLUGIN_BASE}/config`, {
+            method: 'GET',
+            headers: getRequestHeaders(),
+        });
+        if (fresh.ok) globalConfigCache = await fresh.json();
+        updateStatusIndicator();
+    };
+    $('#honcho_api_key, #honcho_api_key_btn').on('click', openApiKeyDialog);
 
     if (event_types.PERSONA_CREATED) eventSource.on(event_types.PERSONA_CREATED, syncSTPersonaToGlobal);
     if (event_types.PERSONA_RENAMED) eventSource.on(event_types.PERSONA_RENAMED, syncSTPersonaToGlobal);
